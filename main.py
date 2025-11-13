@@ -1,0 +1,2 @@
+import Cam_Recognition_Registration
+Cam_Recognition_Registration()
