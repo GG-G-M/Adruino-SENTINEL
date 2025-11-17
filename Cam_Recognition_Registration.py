@@ -347,7 +347,7 @@ def create_basic_encoding_from_region(face_region):
         print(f"Basic encoding from region failed: {e}")
         return None
 
-def compare_basic_encodings(current_encoding, known_encodings, known_names, threshold=0.7):
+def compare_basic_encodings(current_encoding, known_encodings, known_names, threshold=0.9):
     """Compare basic encodings using histogram correlation"""
     best_match = "Unknown"
     best_confidence = 0
