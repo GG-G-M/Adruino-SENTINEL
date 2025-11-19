@@ -15,32 +15,83 @@ GESTURES_FILE = "hand_gestures.pkl"
 
 # Security thresholds
 FACE_CONFIDENCE_THRESHOLD = 0.6
-OPENCV_THRESHOLD = 0.85
+OPENCV_THRESHOLD = 0.75
 
 # Timing settings
-FACE_VERIFICATION_TIME = 1.0 # THIS IS THE BEST TIME
-GESTURE_TIMEOUT = 6.9 # ALSO THE BEST TIME
+FACE_VERIFICATION_TIME = 5.0
+GESTURE_TIMEOUT = 6.9
 
 # GESTURE RECOGNITION SETTINGS
+GESTURE_MATCH_THRESHOLD = 0.69
+GESTURE_DETECTION_CONFIDENCE = 0.5
+GESTURE_TRACKING_CONFIDENCE = 0.3
+
+# Multi-sample settings
+SAMPLES_PER_PERSON = 3  # Number of images to capture per person
+
 # ============================================
-GESTURE_MATCH_THRESHOLD = 0.69  #  MAIN THRESHOLD (0.60-0.95)
-GESTURE_DETECTION_CONFIDENCE = 0.5  # Hand detection sensitivity (0.3-0.9)
-GESTURE_TRACKING_CONFIDENCE = 0.3   # Hand tracking sensitivity (0.3-0.7)
+# IMAGE PREPROCESSING FOR LIGHTING COMPENSATION
 # ============================================
+def normalize_lighting(image):
+    """Apply multiple lighting normalization techniques"""
+    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    
+    lab = cv2.merge([l, a, b])
+    normalized = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    
+    return normalized
+
+def enhance_contrast(image):
+    """Enhanced contrast normalization"""
+    ycrcb = cv2.cvtColor(image, cv2.COLOR_RGB2YCrCb)
+    y, cr, cb = cv2.split(ycrcb)
+    
+    y = cv2.equalizeHist(y)
+    
+    ycrcb = cv2.merge([y, cr, cb])
+    enhanced = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2RGB)
+    
+    return enhanced
+
+def gamma_correction(image, gamma=1.2):
+    """Apply gamma correction for brightness adjustment"""
+    inv_gamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 
+                      for i in np.arange(0, 256)]).astype("uint8")
+    return cv2.LUT(image, table)
+
+def preprocess_face(image):
+    """Complete preprocessing pipeline"""
+    normalized = normalize_lighting(image)
+    enhanced = enhance_contrast(normalized)
+    
+    gray = cv2.cvtColor(enhanced, cv2.COLOR_RGB2GRAY)
+    mean_brightness = np.mean(gray)
+    
+    if mean_brightness < 80:
+        enhanced = gamma_correction(enhanced, gamma=0.8)
+    elif mean_brightness > 180:
+        enhanced = gamma_correction(enhanced, gamma=1.3)
+    
+    return enhanced
 
 # ============================================
 # FACE RECOGNITION CLASS
 # ============================================
 class FaceRecognition:
-    """Handle all face detection and recognition"""
+    """Handle all face detection and recognition with multiple samples support"""
     
     def __init__(self):
         self.available_methods = self._test_capabilities()
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
-        self.known_encodings = []
-        self.known_names = []
+        # Changed structure: name -> list of encodings
+        self.known_encodings = {}  # {name: [encoding1, encoding2, encoding3]}
         self._load_encodings()
     
     def _test_capabilities(self):
@@ -54,25 +105,31 @@ class FaceRecognition:
             methods.append('face_encodings')
             print("✅ face_recognition library available")
         except (ImportError, Exception):
-            print("⚠️  face_recognition unavailable, using OpenCV")
+            print("⚠️  face_recognition unavailable, using OpenCV with lighting compensation")
         return methods
     
     def _create_encoding(self, rgb_frame):
-        """Create face encoding"""
+        """Create face encoding with lighting normalization"""
+        preprocessed = preprocess_face(rgb_frame)
+        
         if 'face_encodings' in self.available_methods:
             try:
                 import face_recognition
-                encodings = face_recognition.face_encodings(rgb_frame)
+                encodings = face_recognition.face_encodings(preprocessed)
                 if encodings:
                     return encodings[0]
             except Exception:
                 pass
         
-        return self._create_histogram_encoding(rgb_frame)
+        return self._create_histogram_encoding(preprocessed)
     
     def _create_histogram_encoding(self, rgb_frame):
-        """Create histogram-based encoding"""
+        """Create enhanced histogram-based encoding with lighting compensation"""
         gray = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2GRAY)
+        
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        
         faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
         
         if len(faces) > 0:
@@ -82,24 +139,43 @@ class FaceRecognition:
             
             hsv = cv2.cvtColor(face_std, cv2.COLOR_RGB2HSV)
             lab = cv2.cvtColor(face_std, cv2.COLOR_RGB2LAB)
+            gray_face = cv2.cvtColor(face_std, cv2.COLOR_RGB2GRAY)
             
             hist_hsv = cv2.calcHist([hsv], [0, 1], None, [50, 60], [0, 180, 0, 256])
-            hist_lab = cv2.calcHist([lab], [0, 1], None, [50, 60], [0, 255, 0, 255])
+            hist_lab = cv2.calcHist([lab], [1, 2], None, [50, 60], [0, 255, 0, 255])
+            
+            lbp = self._calculate_lbp(gray_face)
+            hist_lbp = cv2.calcHist([lbp], [0], None, [256], [0, 256])
             
             hist_hsv = cv2.normalize(hist_hsv, hist_hsv).flatten()
             hist_lab = cv2.normalize(hist_lab, hist_lab).flatten()
+            hist_lbp = cv2.normalize(hist_lbp, hist_lbp).flatten()
             
-            return np.concatenate([hist_hsv, hist_lab])
+            return np.concatenate([hist_hsv * 0.3, hist_lab * 0.4, hist_lbp * 0.3])
         return None
+    
+    def _calculate_lbp(self, gray_image):
+        """Calculate Local Binary Pattern"""
+        lbp = np.zeros_like(gray_image)
+        for i in range(1, gray_image.shape[0] - 1):
+            for j in range(1, gray_image.shape[1] - 1):
+                center = gray_image[i, j]
+                code = 0
+                code |= (gray_image[i-1, j-1] >= center) << 7
+                code |= (gray_image[i-1, j] >= center) << 6
+                code |= (gray_image[i-1, j+1] >= center) << 5
+                code |= (gray_image[i, j+1] >= center) << 4
+                code |= (gray_image[i+1, j+1] >= center) << 3
+                code |= (gray_image[i+1, j] >= center) << 2
+                code |= (gray_image[i+1, j-1] >= center) << 1
+                code |= (gray_image[i, j-1] >= center) << 0
+                lbp[i, j] = code
+        return lbp
     
     def _save_encodings(self):
         """Save encodings to disk"""
-        data = {
-            name: {'encoding': enc, 'type': type(enc).__name__}
-            for name, enc in zip(self.known_names, self.known_encodings)
-        }
         with open(ENCODINGS_FILE, 'wb') as f:
-            pickle.dump(data, f)
+            pickle.dump(self.known_encodings, f)
     
     def _load_encodings(self):
         """Load encodings from disk"""
@@ -108,24 +184,32 @@ class FaceRecognition:
         
         try:
             with open(ENCODINGS_FILE, 'rb') as f:
-                data = pickle.load(f)
+                self.known_encodings = pickle.load(f)
             
-            self.known_names = []
-            self.known_encodings = []
+            # Handle old format (list) and convert to new format (dict)
+            if isinstance(self.known_encodings, dict):
+                # Check if it's old dict format {name: encoding}
+                if self.known_encodings and not isinstance(list(self.known_encodings.values())[0], list):
+                    # Convert old format to new format
+                    old_data = self.known_encodings.copy()
+                    self.known_encodings = {}
+                    for name, enc_data in old_data.items():
+                        if isinstance(enc_data, dict) and 'encoding' in enc_data:
+                            self.known_encodings[name] = [enc_data['encoding']]
+                        else:
+                            self.known_encodings[name] = [enc_data]
+                    self._save_encodings()
+                    print("✅ Converted old format to multi-sample format")
             
-            for name, info in data.items():
-                self.known_names.append(name)
-                if isinstance(info, dict):
-                    self.known_encodings.append(info['encoding'])
-                else:
-                    self.known_encodings.append(info)
+            total_samples = sum(len(encs) for encs in self.known_encodings.values())
+            print(f"✅ Loaded {len(self.known_encodings)} people with {total_samples} total samples")
             
-            print(f"✅ Loaded {len(self.known_names)} registered faces")
         except Exception as e:
             print(f"❌ Error loading encodings: {e}")
+            self.known_encodings = {}
     
-    def register_face(self, name=None):
-        """Register a new face"""
+    def register_face(self, name=None, num_samples=SAMPLES_PER_PERSON):
+        """Register multiple face samples for a person"""
         if name is None:
             name = input("Enter name: ").strip()
         
@@ -133,52 +217,89 @@ class FaceRecognition:
             print("❌ Name cannot be empty")
             return False
         
+        # Check if person already exists
+        if name in self.known_encodings:
+            print(f"⚠️  '{name}' already registered with {len(self.known_encodings[name])} samples")
+            choice = input("Add more samples? (y/n): ").strip().lower()
+            if choice != 'y':
+                return False
+        else:
+            self.known_encodings[name] = []
+        
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             print("❌ Cannot access camera")
             return False
         
-        print("Position your face in the frame. Press 's' to capture")
+        captured_count = 0
+        current_samples = len(self.known_encodings[name])
         
-        while True:
+        print(f"\n📸 Capturing {num_samples} samples for '{name}'")
+        print("💡 TIP: Change your position/angle slightly between captures for better recognition")
+        print("Press 's' to capture each sample")
+        
+        while captured_count < num_samples:
             ret, frame = cap.read()
             if not ret:
                 continue
             
-            # Show detection box
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            preprocessed = preprocess_face(rgb_frame)
+            preview = cv2.cvtColor(preprocessed, cv2.COLOR_RGB2BGR)
+            
+            gray = cv2.cvtColor(preview, cv2.COLOR_BGR2GRAY)
             faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
             
             for (x, y, w, h) in faces:
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                cv2.putText(frame, "Press 's' to capture", (x, y-10),
+                cv2.rectangle(preview, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            
+            combined = np.hstack([frame, preview])
+            
+            # Status text
+            status = f"Sample {captured_count + 1}/{num_samples} - Press 's' to capture"
+            cv2.putText(combined, status, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(combined, "Original", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(combined, "Processed", (frame.shape[1] + 10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            if captured_count > 0:
+                cv2.putText(combined, f"✓ {captured_count} captured", (10, combined.shape[0] - 20),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
-            cv2.imshow("Register Face", frame)
+            cv2.imshow("Register Face - Multiple Samples", combined)
             key = cv2.waitKey(1) & 0xFF
             
             if key == ord('s'):
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 encoding = self._create_encoding(rgb_frame)
                 
                 if encoding is not None:
-                    # Save image
-                    img_path = os.path.join(REGISTERED_FOLDER, f"{name}.jpg")
+                    # Save image with sample number
+                    img_path = os.path.join(REGISTERED_FOLDER, 
+                                          f"{name}_sample{current_samples + captured_count + 1}.jpg")
                     Image.fromarray(rgb_frame).save(img_path, 'JPEG', quality=95)
                     
-                    # Save encoding
-                    self.known_names.append(name)
-                    self.known_encodings.append(encoding)
-                    self._save_encodings()
+                    # Add encoding to list
+                    self.known_encodings[name].append(encoding)
+                    captured_count += 1
                     
-                    print(f"✅ Face registered: {name}")
-                    cap.release()
-                    cv2.destroyAllWindows()
-                    return True
+                    print(f"  ✅ Captured sample {captured_count}/{num_samples}")
+                    time.sleep(0.5)  # Brief pause between captures
+                    
+                    if captured_count >= num_samples:
+                        self._save_encodings()
+                        print(f"\n✅ All {num_samples} samples registered for '{name}'!")
+                        print(f"   Total samples for {name}: {len(self.known_encodings[name])}")
+                        cap.release()
+                        cv2.destroyAllWindows()
+                        return True
                 else:
-                    print("❌ No face detected, try again")
+                    print("  ❌ No face detected, try again")
             
             elif key == ord('q'):
+                print("\n❌ Registration cancelled")
                 break
         
         cap.release()
@@ -186,7 +307,7 @@ class FaceRecognition:
         return False
     
     def verify_face_continuous(self, duration=FACE_VERIFICATION_TIME):
-        """Verify face continuously for specified duration"""
+        """Verify face continuously with multiple sample support"""
         if not self.known_encodings:
             print("❌ No registered faces")
             return None, None
@@ -197,11 +318,12 @@ class FaceRecognition:
             return None, None
         
         print(f"🔍 Verifying face for {duration} seconds...")
+        print("💡 Lighting compensation active - works in various lighting conditions!")
         
         start_time = time.time()
-        consistent_name = None
         frame_count = 0
         name_counts = {}
+        confidence_scores = {}
         
         while time.time() - start_time < duration:
             ret, frame = cap.read()
@@ -213,17 +335,25 @@ class FaceRecognition:
             
             if name != "Unknown":
                 name_counts[name] = name_counts.get(name, 0) + 1
+                if name not in confidence_scores:
+                    confidence_scores[name] = []
+                confidence_scores[name].append(confidence)
                 frame_count += 1
             
-            # Draw feedback
             elapsed = time.time() - start_time
             remaining = duration - elapsed
+            
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness = np.mean(gray)
+            brightness_text = "Dark" if brightness < 80 else "Bright" if brightness > 180 else "Normal"
             
             color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
             cv2.putText(frame, f"Verifying: {remaining:.1f}s", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(frame, f"Detected: {name}", (10, 60),
+            cv2.putText(frame, f"Detected: {name} ({confidence:.0%})", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            cv2.putText(frame, f"Lighting: {brightness_text}", (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             
             cv2.imshow("Face Verification", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -234,15 +364,14 @@ class FaceRecognition:
         cap.release()
         cv2.destroyAllWindows()
         
-        # Determine most consistent face
         if name_counts:
             consistent_name = max(name_counts, key=name_counts.get)
             consistency = name_counts[consistent_name] / frame_count if frame_count > 0 else 0
+            avg_confidence = np.mean(confidence_scores[consistent_name])
             
-            # Require at least 70% consistency
-            if consistency >= 0.7:
-                print(f"✅ Face verified: {consistent_name} ({consistency:.0%} consistent)")
-                return consistent_name, consistency
+            if consistency >= 0.6:
+                print(f"✅ Face verified: {consistent_name} ({consistency:.0%} consistent, {avg_confidence:.0%} avg confidence)")
+                return consistent_name, avg_confidence
             else:
                 print(f"❌ Inconsistent detection ({consistency:.0%})")
                 return None, None
@@ -251,53 +380,85 @@ class FaceRecognition:
         return None, None
     
     def _recognize_single_face(self, rgb_frame):
-        """Recognize a single face in frame"""
-        # Try face_recognition first
+        """Recognize face by comparing with all samples"""
+        preprocessed = preprocess_face(rgb_frame)
+        
         if 'face_encodings' in self.available_methods:
             try:
                 import face_recognition
-                locations = face_recognition.face_locations(rgb_frame)
-                encodings = face_recognition.face_encodings(rgb_frame, locations)
+                locations = face_recognition.face_locations(preprocessed)
+                encodings = face_recognition.face_encodings(preprocessed, locations)
                 
                 if encodings:
                     encoding = encodings[0]
-                    matches = face_recognition.compare_faces(
-                        self.known_encodings, encoding,
-                        tolerance=1 - FACE_CONFIDENCE_THRESHOLD
-                    )
-                    distances = face_recognition.face_distance(self.known_encodings, encoding)
                     
-                    if len(distances) > 0:
-                        best_idx = np.argmin(distances)
-                        confidence = 1 - distances[best_idx]
+                    best_name = "Unknown"
+                    best_confidence = 0.0
+                    
+                    # Compare with all samples of all people
+                    for name, sample_encodings in self.known_encodings.items():
+                        for sample_enc in sample_encodings:
+                            distance = face_recognition.face_distance([sample_enc], encoding)[0]
+                            confidence = 1 - distance
+                            
+                            if confidence > best_confidence and confidence >= FACE_CONFIDENCE_THRESHOLD:
+                                best_confidence = confidence
+                                best_name = name
+                    
+                    if best_name != "Unknown":
+                        return best_name, best_confidence
                         
-                        if matches[best_idx] and confidence >= FACE_CONFIDENCE_THRESHOLD:
-                            return self.known_names[best_idx], confidence
             except Exception:
                 pass
         
         # Fallback to OpenCV
-        encoding = self._create_histogram_encoding(rgb_frame)
+        encoding = self._create_histogram_encoding(preprocessed)
         if encoding is not None:
             return self._compare_encodings(encoding)
         
         return "Unknown", 0.0
     
     def _compare_encodings(self, current_encoding):
-        """Compare encoding with known faces"""
+        """Compare with all samples using multiple metrics"""
         best_name = "Unknown"
         best_conf = 0.0
         
-        for name, known_enc in zip(self.known_names, self.known_encodings):
-            if isinstance(current_encoding, np.ndarray) and isinstance(known_enc, np.ndarray):
-                min_len = min(len(current_encoding), len(known_enc))
-                corr = np.corrcoef(current_encoding[:min_len], known_enc[:min_len])[0, 1]
-                
-                if not np.isnan(corr) and corr > best_conf and corr >= OPENCV_THRESHOLD:
-                    best_conf = corr
-                    best_name = name
+        for name, sample_encodings in self.known_encodings.items():
+            # Compare with all samples and take the best match
+            for sample_enc in sample_encodings:
+                if isinstance(current_encoding, np.ndarray) and isinstance(sample_enc, np.ndarray):
+                    min_len = min(len(current_encoding), len(sample_enc))
+                    
+                    corr = np.corrcoef(current_encoding[:min_len], sample_enc[:min_len])[0, 1]
+                    
+                    dot_product = np.dot(current_encoding[:min_len], sample_enc[:min_len])
+                    norm_product = np.linalg.norm(current_encoding[:min_len]) * np.linalg.norm(sample_enc[:min_len])
+                    cosine_sim = dot_product / (norm_product + 1e-8)
+                    
+                    combined_score = (corr * 0.6 + cosine_sim * 0.4) if not np.isnan(corr) else cosine_sim
+                    
+                    if combined_score > best_conf and combined_score >= OPENCV_THRESHOLD:
+                        best_conf = combined_score
+                        best_name = name
         
         return best_name, best_conf
+    
+    def delete_person(self, name):
+        """Delete a person's face data"""
+        if name in self.known_encodings:
+            # Delete images
+            for file in os.listdir(REGISTERED_FOLDER):
+                if file.startswith(name):
+                    os.remove(os.path.join(REGISTERED_FOLDER, file))
+            
+            # Delete encodings
+            del self.known_encodings[name]
+            self._save_encodings()
+            print(f"✅ Deleted all data for '{name}'")
+            return True
+        else:
+            print(f"❌ Person '{name}' not found")
+            return False
 
 # ============================================
 # HAND GESTURE RECOGNITION CLASS
@@ -342,6 +503,13 @@ class HandGestureRecognition:
     def register_gesture(self, person_name):
         """Register a hand gesture for a person"""
         print(f"\n📷 Registering hand gesture for: {person_name}")
+        
+        if person_name in self.registered_gestures:
+            print(f"⚠️  Gesture already exists for '{person_name}'")
+            choice = input("Replace existing gesture? (y/n): ").strip().lower()
+            if choice != 'y':
+                return False
+        
         print("Show your gesture and hold it steady. Press 's' to capture")
         
         cap = cv2.VideoCapture(0)
@@ -456,13 +624,22 @@ class HandGestureRecognition:
             current = current[:min_len]
             registered = registered[:min_len]
             
-            # Calculate Euclidean distance
             distance = np.linalg.norm(current - registered)
-            # Normalize to similarity score (0-1)
             similarity = 1 / (1 + distance)
             return similarity
         except Exception:
             return 0.0
+    
+    def delete_gesture(self, name):
+        """Delete a person's gesture"""
+        if name in self.registered_gestures:
+            del self.registered_gestures[name]
+            self._save_gestures()
+            print(f"✅ Deleted gesture for '{name}'")
+            return True
+        else:
+            print(f"❌ No gesture found for '{name}'")
+            return False
 
 # ============================================
 # MAIN SECURITY SYSTEM
@@ -476,31 +653,31 @@ class SecuritySystem:
         print("\n" + "="*60)
         print("  DUAL AUTHENTICATION SECURITY SYSTEM")
         print("  Face Recognition + Hand Gesture Verification")
+        print("  🔆 With Multi-Sample & Lighting Compensation 🔆")
         print("="*60)
     
-    def register_person(self):
+    def register_person(self, num_samples=SAMPLES_PER_PERSON):
         """Register both face and gesture for a person"""
         print("\n--- REGISTRATION PROCESS ---")
         
-        # Step 1: Register Face
-        print("\n[1/2] Face Registration")
-        if not self.face_recognition.register_face():
+        # Step 1: Register Face (multiple samples)
+        print(f"\n[1/2] Face Registration ({num_samples} samples)")
+        if not self.face_recognition.register_face(num_samples=num_samples):
             print("❌ Face registration failed")
             return False
         
-        name = self.face_recognition.known_names[-1]
+        name = list(self.face_recognition.known_encodings.keys())[-1]
         
         # Step 2: Register Gesture
         print("\n[2/2] Gesture Registration")
         if not self.gesture_recognition.register_gesture(name):
             print("❌ Gesture registration failed")
-            # Remove face registration if gesture fails
-            self.face_recognition.known_names.pop()
-            self.face_recognition.known_encodings.pop()
-            self.face_recognition._save_encodings()
+            choice = input("Keep face registration without gesture? (y/n): ").strip().lower()
+            if choice != 'y':
+                self.face_recognition.delete_person(name)
             return False
         
-        print(f"\n✅ {name} registered successfully with face and gesture!")
+        print(f"\n✅ {name} registered successfully with {len(self.face_recognition.known_encodings[name])} face samples and gesture!")
         return True
     
     def authenticate_person(self):
@@ -529,10 +706,6 @@ class SecuritySystem:
             print(f"  Welcome, {person_name}!")
             print(f"  🚪 ACCESS GRANTED")
             print("="*60)
-            
-            # TODO: Send signal to Arduino to unlock door
-            # self.send_arduino_signal("UNLOCK")
-            
             return True
         else:
             print("\n" + "="*60)
@@ -542,25 +715,39 @@ class SecuritySystem:
             print("="*60)
             return False
     
-    def send_arduino_signal(self, command):
-        """Send signal to Arduino (to be implemented)"""
-        # TODO: Implement Arduino serial communication
-        # Example:
-        # import serial
-        # arduino = serial.Serial('COM3', 9600)
-        # arduino.write(command.encode())
-        print(f"📡 [PLACEHOLDER] Sending to Arduino: {command}")
-    
     def list_registered_users(self):
-        """List all registered users"""
+        """List all registered users with sample counts"""
         print("\n📋 Registered Users:")
-        if not self.face_recognition.known_names:
+        if not self.face_recognition.known_encodings:
             print("  No users registered")
             return
         
-        for name in self.face_recognition.known_names:
+        for name, encodings in self.face_recognition.known_encodings.items():
             has_gesture = "✅" if name in self.gesture_recognition.registered_gestures else "❌"
-            print(f"  • {name} - Gesture: {has_gesture}")
+            sample_count = len(encodings)
+            print(f"  • {name} - Face Samples: {sample_count} | Gesture: {has_gesture}")
+    
+    def delete_user(self):
+        """Delete a registered user"""
+        self.list_registered_users()
+        name = input("\nEnter name to delete: ").strip()
+        
+        if not name:
+            print("❌ Name cannot be empty")
+            return
+        
+        confirm = input(f"⚠️  Delete ALL data for '{name}'? (yes/no): ").strip().lower()
+        if confirm != 'yes':
+            print("Cancelled")
+            return
+        
+        face_deleted = self.face_recognition.delete_person(name)
+        gesture_deleted = self.gesture_recognition.delete_gesture(name)
+        
+        if face_deleted or gesture_deleted:
+            print(f"✅ User '{name}' deleted successfully")
+        else:
+            print(f"❌ User '{name}' not found")
 
 # ============================================
 # MAIN PROGRAM
@@ -574,15 +761,17 @@ def main():
     while True:
         print("\n" + "-"*60)
         print("MENU:")
-        print("1. Register New Person (Face + Gesture)")
+        print(f"1. Register New Person ({SAMPLES_PER_PERSON} face samples + gesture)")
         print("2. Authenticate Person (Face + Gesture)")
         print("3. List Registered Users")
-        print("4. Test Face Recognition Only")
-        print("5. Test Gesture Recognition Only")
-        print("6. Exit")
+        print("4. Add More Face Samples to Existing User")
+        print("5. Test Face Recognition Only")
+        print("6. Test Gesture Recognition Only")
+        print("7. Delete User")
+        print("8. Exit")
         print("-"*60)
         
-        choice = input("Choose option (1-6): ").strip()
+        choice = input("Choose option (1-8): ").strip()
         
         if choice == "1":
             system.register_person()
@@ -594,17 +783,31 @@ def main():
             system.list_registered_users()
         
         elif choice == "4":
+            system.list_registered_users()
+            name = input("\nEnter person name: ").strip()
+            if name in system.face_recognition.known_encodings:
+                num = input(f"How many additional samples? (default {SAMPLES_PER_PERSON}): ").strip()
+                num = int(num) if num.isdigit() else SAMPLES_PER_PERSON
+                system.face_recognition.register_face(name=name, num_samples=num)
+            else:
+                print(f"❌ Person '{name}' not found")
+        
+        elif choice == "5":
             name, conf = system.face_recognition.verify_face_continuous()
             if name:
                 print(f"✅ Recognized: {name} ({conf:.0%})")
             else:
                 print("❌ Face not recognized")
         
-        elif choice == "5":
-            person_name = input("Enter person name: ").strip()
+        elif choice == "6":
+            system.list_registered_users()
+            person_name = input("\nEnter person name: ").strip()
             system.gesture_recognition.verify_gesture(person_name)
         
-        elif choice == "6":
+        elif choice == "7":
+            system.delete_user()
+        
+        elif choice == "8":
             print("\n👋 Goodbye!")
             break
         

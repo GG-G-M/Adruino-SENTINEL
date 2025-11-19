@@ -397,6 +397,7 @@ def main():
             for name in known_names:
                 print(f"  - {name}")
         elif choice == "4":
+            
             print("Goodbye!")
             break
         else:
