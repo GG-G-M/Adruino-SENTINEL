@@ -5,6 +5,9 @@ from PIL import Image
 import pickle
 import time
 import mediapipe as mp
+import serial
+import serial.tools.list_ports
+
 
 # ============================================
 # CONFIGURATION
@@ -28,6 +31,90 @@ GESTURE_TRACKING_CONFIDENCE = 0.3
 
 # Multi-sample settings
 SAMPLES_PER_PERSON = 3  # Number of images to capture per person
+
+# ============================================
+# ARDUINO COMMUNICATION CLASS
+# ============================================
+class ArduinoController:
+    """Handle all Arduino communication and device control"""
+    
+    def __init__(self):
+        self.arduino = None
+        self.connected = False
+        self._connect_arduino()
+    
+    def _connect_arduino(self):
+        """Connect to Arduino automatically"""
+        print("\nScanning for A8rduino...")
+        ports = list(serial.tools.list_ports.comports())
+        
+        for p in ports:
+            print(f"  Found: {p.device} - {p.description}")
+            
+            # Try common Arduino identifiers
+            if any(identifier in p.description.upper() for identifier in 
+                ['CH340', 'ARDUINO', 'USB SERIAL', 'USB-SERIAL']):
+                try:
+                    print(f"🔌 Attempting connection to {p.device}...")
+                    self.arduino = serial.Serial(p.device, 9600, timeout=1)
+                    time.sleep(2)  # Wait for Arduino to reset
+                    self.connected = True
+                    print("✅ Arduino connected successfully!")
+                    
+                    # ❌ REMOVE THIS LINE - No automatic test
+                    # self.arduino.write(b"TEST\n")
+                    
+                    return
+                    
+                except Exception as e:
+                    print(f"❌ Failed to connect to {p.device}: {e}")
+                    continue
+        
+        print("⚠️  Arduino not found. Running in simulation mode.")
+        self.connected = False
+    
+    def send_command(self, command):
+        """Send command to Arduino"""
+        if self.connected and self.arduino:
+            try:
+                self.arduino.write(f"{command}\n".encode())
+                print(f"📤 Sent to Arduino: {command}")
+                return True
+            except Exception as e:
+                print(f"❌ Failed to send command: {e}")
+                self.connected = False
+                return False
+        else:
+            print(f"🔌 [SIMULATION] Command: {command}")
+            return True
+    
+    def access_granted(self):
+        """Execute access granted sequence"""
+        print("🚪 ACCESS GRANTED - Activating devices...")
+        self.send_command("GRANTED")
+    
+    def access_denied(self):
+        """Execute access denied sequence"""
+        print("🚫 ACCESS DENIED - Activating alert...")
+        self.send_command("DENIED")
+    
+    def system_ready(self):
+        """System ready notification"""
+        self.send_command("READY")
+    
+    def face_verified(self):
+        """Face verified notification"""
+        self.send_command("FACE_VERIFIED")
+    
+    def gesture_required(self):
+        """Gesture verification required"""
+        self.send_command("GESTURE_REQUIRED")
+    
+    def close(self):
+        """Close Arduino connection"""
+        if self.connected and self.arduino:
+            self.arduino.close()
+            print("🔌 Arduino connection closed")
 
 # ============================================
 # IMAGE PREPROCESSING FOR LIGHTING COMPENSATION
@@ -85,12 +172,12 @@ def preprocess_face(image):
 class FaceRecognition:
     """Handle all face detection and recognition with multiple samples support"""
     
-    def __init__(self):
+    def __init__(self, arduino_controller):
+        self.arduino = arduino_controller
         self.available_methods = self._test_capabilities()
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
-        # Changed structure: name -> list of encodings
         self.known_encodings = {}  # {name: [encoding1, encoding2, encoding3]}
         self._load_encodings()
     
@@ -103,9 +190,9 @@ class FaceRecognition:
             test_img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
             face_recognition.face_encodings(test_img)
             methods.append('face_encodings')
-            print("✅ face_recognition library available")
+            print(" face_recognition library available")
         except (ImportError, Exception):
-            print("⚠️  face_recognition unavailable, using OpenCV with lighting compensation")
+            print(" face_recognition unavailable, using OpenCV with lighting compensation")
         return methods
     
     def _create_encoding(self, rgb_frame):
@@ -202,7 +289,7 @@ class FaceRecognition:
                     print("✅ Converted old format to multi-sample format")
             
             total_samples = sum(len(encs) for encs in self.known_encodings.values())
-            print(f"✅ Loaded {len(self.known_encodings)} people with {total_samples} total samples")
+            print(f" Loaded {len(self.known_encodings)} people with {total_samples} total samples")
             
         except Exception as e:
             print(f"❌ Error loading encodings: {e}")
@@ -371,6 +458,8 @@ class FaceRecognition:
             
             if consistency >= 0.6:
                 print(f"✅ Face verified: {consistent_name} ({consistency:.0%} consistent, {avg_confidence:.0%} avg confidence)")
+                # Notify Arduino that face is verified
+                self.arduino.face_verified()
                 return consistent_name, avg_confidence
             else:
                 print(f"❌ Inconsistent detection ({consistency:.0%})")
@@ -466,7 +555,8 @@ class FaceRecognition:
 class HandGestureRecognition:
     """Handle hand gesture detection and recognition"""
     
-    def __init__(self):
+    def __init__(self, arduino_controller):
+        self.arduino = arduino_controller
         self.mp_hands = mp.solutions.hands
         self.mp_draw = mp.solutions.drawing_utils
         self.hands = self.mp_hands.Hands(
@@ -564,6 +654,9 @@ class HandGestureRecognition:
         
         print(f"\n✋ Show your gesture within {timeout} seconds...")
         
+        # Notify Arduino that gesture verification is required
+        self.arduino.gesture_required()
+        
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             print("❌ Cannot access camera")
@@ -648,13 +741,12 @@ class SecuritySystem:
     """Main security system combining face and gesture recognition"""
     
     def __init__(self):
-        self.face_recognition = FaceRecognition()
-        self.gesture_recognition = HandGestureRecognition()
-        print("\n" + "="*60)
-        print("  DUAL AUTHENTICATION SECURITY SYSTEM")
-        print("  Face Recognition + Hand Gesture Verification")
-        print("  🔆 With Multi-Sample & Lighting Compensation 🔆")
-        print("="*60)
+        self.arduino = ArduinoController()
+        self.face_recognition = FaceRecognition(self.arduino)
+        self.gesture_recognition = HandGestureRecognition(self.arduino)
+        
+        # Notify system is ready
+        self.arduino.system_ready()
     
     def register_person(self, num_samples=SAMPLES_PER_PERSON):
         """Register both face and gesture for a person"""
@@ -692,6 +784,7 @@ class SecuritySystem:
         
         if person_name is None:
             print("\n❌ AUTHENTICATION FAILED: Face not verified")
+            self.arduino.access_denied()
             return False
         
         print(f"\n✅ Face verified: {person_name}")
@@ -706,14 +799,20 @@ class SecuritySystem:
             print(f"  Welcome, {person_name}!")
             print(f"  🚪 ACCESS GRANTED")
             print("="*60)
+            
+            # Send access granted signal to Arduino
+            self.arduino.access_granted()
             return True
+
         else:
             print("\n" + "="*60)
             print(f"  ❌ AUTHENTICATION FAILED")
             print(f"  Face verified but gesture did not match")
             print(f"  🚪 ACCESS DENIED")
             print("="*60)
+            self.arduino.access_denied()
             return False
+
     
     def list_registered_users(self):
         """List all registered users with sample counts"""
@@ -748,6 +847,10 @@ class SecuritySystem:
             print(f"✅ User '{name}' deleted successfully")
         else:
             print(f"❌ User '{name}' not found")
+    
+    def close(self):
+        """Close all connections"""
+        self.arduino.close()
 
 # ============================================
 # MAIN PROGRAM
@@ -758,61 +861,74 @@ def main():
     
     system = SecuritySystem()
     
-    while True:
-        print("\n" + "-"*60)
-        print("MENU:")
-        print(f"1. Register New Person ({SAMPLES_PER_PERSON} face samples + gesture)")
-        print("2. Authenticate Person (Face + Gesture)")
-        print("3. List Registered Users")
-        print("4. Add More Face Samples to Existing User")
-        print("5. Test Face Recognition Only")
-        print("6. Test Gesture Recognition Only")
-        print("7. Delete User")
-        print("8. Exit")
-        print("-"*60)
-        
-        choice = input("Choose option (1-8): ").strip()
-        
-        if choice == "1":
-            system.register_person()
-        
-        elif choice == "2":
-            system.authenticate_person()
-        
-        elif choice == "3":
-            system.list_registered_users()
-        
-        elif choice == "4":
-            system.list_registered_users()
-            name = input("\nEnter person name: ").strip()
-            if name in system.face_recognition.known_encodings:
-                num = input(f"How many additional samples? (default {SAMPLES_PER_PERSON}): ").strip()
-                num = int(num) if num.isdigit() else SAMPLES_PER_PERSON
-                system.face_recognition.register_face(name=name, num_samples=num)
+    try:
+        while True:
+            print("\n" + "-"*60)
+            print("MENU:")
+            print(f"1. Register New Person ({SAMPLES_PER_PERSON} face samples + gesture)")
+            print("2. Authenticate Person (Face + Gesture)")
+            print("3. List Registered Users")
+            print("4. Add More Face Samples to Existing User")
+            print("5. Test Face Recognition Only")
+            print("6. Test Gesture Recognition Only")
+            print("7. Delete User")
+            print("8. Test Arduino Components")  # ✅ ADD THIS NEW OPTION
+            print("9. Exit")
+            print("-"*60)
+            
+            choice = input("Choose option (1-9): ").strip()
+            
+            if choice == "1":
+                system.register_person()
+            
+            elif choice == "2":
+                system.authenticate_person()
+            
+            elif choice == "3":
+                system.list_registered_users()
+            
+            elif choice == "4":
+                system.list_registered_users()
+                name = input("\nEnter person name: ").strip()
+                if name in system.face_recognition.known_encodings:
+                    num = input(f"How many additional samples? (default {SAMPLES_PER_PERSON}): ").strip()
+                    num = int(num) if num.isdigit() else SAMPLES_PER_PERSON
+                    system.face_recognition.register_face(name=name, num_samples=num)
+                else:
+                    print(f"❌ Person '{name}' not found")
+            
+            elif choice == "5":
+                name, conf = system.face_recognition.verify_face_continuous()
+                if name:
+                    print(f"✅ Recognized: {name} ({conf:.0%})")
+                else:
+                    print("❌ Face not recognized")
+            
+            elif choice == "6":
+                system.list_registered_users()
+                person_name = input("\nEnter person name: ").strip()
+                system.gesture_recognition.verify_gesture(person_name)
+            
+            elif choice == "7":
+                system.delete_user()
+            
+            elif choice == "8":  # ✅ NEW TEST ARDUINO OPTION
+                print("\n🔧 Testing Arduino components...")
+                if system.arduino.connected:
+                    system.arduino.send_command("TEST")
+                    print("✅ Test command sent to Arduino")
+                else:
+                    print("❌ Arduino not connected - running in simulation mode")
+            
+            elif choice == "9":
+                print("\n👋 Goodbye!")
+                break
+            
             else:
-                print(f"❌ Person '{name}' not found")
-        
-        elif choice == "5":
-            name, conf = system.face_recognition.verify_face_continuous()
-            if name:
-                print(f"✅ Recognized: {name} ({conf:.0%})")
-            else:
-                print("❌ Face not recognized")
-        
-        elif choice == "6":
-            system.list_registered_users()
-            person_name = input("\nEnter person name: ").strip()
-            system.gesture_recognition.verify_gesture(person_name)
-        
-        elif choice == "7":
-            system.delete_user()
-        
-        elif choice == "8":
-            print("\n👋 Goodbye!")
-            break
-        
-        else:
-            print("❌ Invalid option")
+                print("❌ Invalid option")
+    
+    finally:
+        system.close()
 
 if __name__ == "__main__":
     main()
