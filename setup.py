@@ -44,7 +44,10 @@ def setup_environment():
         "pyserial==3.5",
         "scikit-learn==1.3.0",
         "scipy==1.11.3",
-        "pickle-mixin==1.0.2"
+        "pickle-mixin==1.0.2",
+        # Diagnostic dependencies
+        "psutil==5.9.6",        # For hardware monitoring in diagnostic
+        "gputil==1.4.0",        # For GPU monitoring in diagnostic
     ]
     
     # Install core packages first
@@ -109,12 +112,29 @@ except Exception as e:
 try:
     import face_recognition
     print("✅ face_recognition imported successfully")
-    print("✅ All dependencies installed correctly!")
 except Exception as e:
     print(f"⚠️ face_recognition: {e}")
     print("   Run this command manually:")
     print("   pip install face-recognition")
     success = False
+
+# Test diagnostic dependencies
+try:
+    import psutil
+    print(f"✅ psutil imported successfully (for diagnostics)")
+except Exception as e:
+    print(f"⚠️ psutil: {e} (optional for diagnostics)")
+
+try:
+    import GPUtil
+    print("✅ GPUtil imported successfully (for diagnostics)")
+except Exception as e:
+    print(f"⚠️ GPUtil: {e} (optional for diagnostics)")
+
+if success:
+    print("\\n✅ All dependencies installed correctly!")
+else:
+    print("\\n⚠️ Some dependencies failed to install")
 
 sys.exit(0 if success else 1)
 """
@@ -131,8 +151,14 @@ sys.exit(0 if success else 1)
             print(f"   {venv_path}\\Scripts\\activate")
         else:
             print(f"   source {venv_path}/bin/activate")
-        print("2. Run the program:")
+        print("\n2. Run diagnostic to check system compatibility:")
+        print("   python diagnostic.py")
+        print("\n3. Run the main security system:")
         print("   python main.py")
+        print("\n4. Files available:")
+        print("   • diagnostic.py - Comprehensive system diagnostic")
+        print("   • main.py       - Security system main program")
+        print("   • setup.py      - This setup script")
         print("="*60)
         return True
     else:

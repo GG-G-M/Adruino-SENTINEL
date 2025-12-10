@@ -38,7 +38,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="C:\Users\gilgr\Desktop\Adruino-Experimental\venv"
+VIRTUAL_ENV="C:\Users\gilgr\Desktop\Adruino-SENTINEL\venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"

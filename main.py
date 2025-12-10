@@ -19,27 +19,66 @@ except ImportError:
 # ============================================
 # CONFIGURATION - OPTIMIZED FOR ACCURACY
 # ============================================
+# 🔧 EDIT THESE VALUES TO ADJUST SECURITY LEVEL
+# ============================================
+
 REGISTERED_FOLDER = "authorized_faces"
 ENCODINGS_FILE = "face_encodings.pkl"
 GESTURES_FILE = "hand_gestures.pkl"
 
-# Enhanced sampling for better accuracy (NO FALSE POSITIVES)
-SAMPLES_PER_PERSON = 10  # More samples = better accuracy
+# ============================================
+# 📸 REGISTRATION SETTINGS
+# ============================================
+SAMPLES_PER_PERSON = 10  # How many face samples to capture (More = better accuracy)
+                         # Recommended: 8-15 samples
+                         
 AUTO_CAPTURE_INTERVAL = 1.5  # Seconds between auto-captures
-MIN_FACE_CONFIDENCE = 0.8  # Minimum detection confidence
+                             # Recommended: 1.0-2.0 seconds
+                             
+MIN_FACE_CONFIDENCE = 0.80  # Minimum face detection quality (0.0-1.0)
+                            # Higher = only clear faces accepted
+                            # Recommended: 0.75-0.85
 
-# Very strict security thresholds (prevents false positives)
-FACE_DISTANCE_THRESHOLD = 0.45  # Lower = stricter (0.6 is default, 0.45 is very strict)
-FACE_VERIFICATION_TIME = 5.0  # Longer verification time
-MIN_CONSISTENCY = 0.70  # 70% of frames must match
-MIN_MATCH_FRAMES = 5  # At least 5 matching frames
+# ============================================
+# 🔒 VERIFICATION SETTINGS (ANTI-FALSE POSITIVE)
+# ============================================
+FACE_DISTANCE_THRESHOLD = 0.45  # How similar faces must be (0.0-1.0)
+                                # Lower = stricter matching
+                                # 0.60 = default/loose
+                                # 0.45-0.50 = strict (recommended)
+                                # 0.35-0.40 = very strict (may reject valid users)
+                                
+MIN_CONSISTENCY = 0.60  # % of verification frames that must match (0.0-1.0)
+                        # Higher = more consistent recognition required
+                        # 0.60 = medium, 0.70 = high, 0.80+ = very strict
+                        
+MIN_MATCH_FRAMES = 5    # Minimum number of matching frames required
+                        # Acts as absolute minimum (even if consistency met)
+                        # Recommended: 3-7 frames
+                        
+MIN_CONFIDENCE_SCORE = 0.50  # Minimum average confidence (0.0-1.0)
+                             # Higher = only high-confidence matches accepted
+                             # 0.50 = medium, 0.60 = high, 0.70+ = very strict
+                             
+FACE_VERIFICATION_TIME = 5.0  # How long to verify face (seconds)
+                              # Longer = more chances to match
+                              # Recommended: 4-6 seconds
 
-# Other settings
-GESTURE_TIMEOUT = 6.9
-DOOR_UNLOCK_DURATION = 2.0
-GESTURE_MATCH_THRESHOLD = 0.69
-GESTURE_DETECTION_CONFIDENCE = 0.5
-GESTURE_TRACKING_CONFIDENCE = 0.3
+# ============================================
+# ✋ GESTURE SETTINGS
+# ============================================
+GESTURE_MATCH_THRESHOLD = 0.69  # How similar gesture must be (0.0-1.0)
+                                # Lower = stricter
+                                
+GESTURE_TIMEOUT = 6.9  # Time to show gesture (seconds)
+
+GESTURE_DETECTION_CONFIDENCE = 0.5  # Hand detection sensitivity
+GESTURE_TRACKING_CONFIDENCE = 0.3   # Hand tracking sensitivity
+
+# ============================================
+# 🚪 ARDUINO SETTINGS
+# ============================================
+DOOR_UNLOCK_DURATION = 2.0  # How long door stays unlocked (seconds)
 
 # ============================================
 # ARDUINO CONTROLLER
@@ -222,17 +261,31 @@ class FaceRecognition:
                     frame_area = frame.shape[0] * frame.shape[1]
                     face_ratio = face_area / frame_area
                     
+                    # Get face encodings to check quality
+                    face_encodings = face_recognition.face_encodings(rgb_frame, [(top, right, bottom, left)])
+                    
+                    # Calculate confidence based on encoding quality
+                    face_confidence = 1.0  # Default high confidence
+                    if face_encodings:
+                        # Check encoding strength (non-zero values indicate good quality)
+                        encoding_strength = np.mean(np.abs(face_encodings[0]))
+                        face_confidence = min(1.0, encoding_strength * 2)  # Normalize
+                    
                     # Quality indicators
                     is_good_size = 0.05 < face_ratio < 0.4  # Face is 5-40% of frame
+                    is_good_confidence = face_confidence >= MIN_FACE_CONFIDENCE
                     time_ready = (current_time - last_capture_time) >= AUTO_CAPTURE_INTERVAL
                     
                     # Color based on quality
-                    if is_good_size and time_ready:
+                    if is_good_size and is_good_confidence and time_ready:
                         color = (0, 255, 0)  # Green - ready to capture
                         status = "READY"
-                    elif is_good_size:
+                    elif is_good_size and is_good_confidence:
                         color = (0, 255, 255)  # Yellow - waiting
                         status = "WAIT"
+                    elif not is_good_confidence:
+                        color = (255, 0, 0)  # Red - low confidence
+                        status = f"LOW CONF ({face_confidence:.0%})"
                     else:
                         color = (0, 165, 255)  # Orange - adjust distance
                         if face_ratio < 0.05:
@@ -244,8 +297,12 @@ class FaceRecognition:
                     cv2.putText(display_frame, status, (left, top - 10),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     
+                    # Show confidence score
+                    cv2.putText(display_frame, f"Conf: {face_confidence:.0%}", (left, bottom + 20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    
                     # Auto-capture when conditions are met
-                    if is_good_size and time_ready and captured_count < num_samples:
+                    if is_good_size and is_good_confidence and time_ready and captured_count < num_samples:
                         try:
                             # Get face encodings
                             face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
@@ -462,20 +519,34 @@ class FaceRecognition:
             print(f"   Processed frames: {processed_frames}")
             print(f"   Matched frames: {match_count}")
             print(f"   Consistency: {consistency:.0%} (need {MIN_CONSISTENCY:.0%})")
-            print(f"   Avg confidence: {avg_confidence:.0%}")
+            print(f"   Avg confidence: {avg_confidence:.0%} (need {MIN_CONFIDENCE_SCORE:.0%})")
             
             # Strict verification checks
-            if consistency >= MIN_CONSISTENCY and match_count >= MIN_MATCH_FRAMES and avg_confidence >= 0.6:
+            passed_consistency = consistency >= MIN_CONSISTENCY
+            passed_match_frames = match_count >= MIN_MATCH_FRAMES
+            passed_confidence = avg_confidence >= MIN_CONFIDENCE_SCORE
+            
+            if passed_consistency and passed_match_frames and passed_confidence:
                 print(f"✅ Face verified: {consistent_name}")
                 self.arduino.face_verified()
                 return consistent_name, avg_confidence
             else:
-                if consistency < MIN_CONSISTENCY:
-                    print(f"❌ Failed: Consistency too low ({consistency:.0%} < {MIN_CONSISTENCY:.0%})")
-                if match_count < MIN_MATCH_FRAMES:
-                    print(f"❌ Failed: Not enough matches ({match_count} < {MIN_MATCH_FRAMES})")
-                if avg_confidence < 0.6:
-                    print(f"❌ Failed: Confidence too low ({avg_confidence:.0%} < 60%)")
+                print("\n❌ Verification FAILED:")
+                if not passed_consistency:
+                    print(f"   ❌ Consistency: {consistency:.0%} < {MIN_CONSISTENCY:.0%} (required)")
+                else:
+                    print(f"   ✅ Consistency: {consistency:.0%}")
+                    
+                if not passed_match_frames:
+                    print(f"   ❌ Match frames: {match_count} < {MIN_MATCH_FRAMES} (required)")
+                else:
+                    print(f"   ✅ Match frames: {match_count}")
+                    
+                if not passed_confidence:
+                    print(f"   ❌ Confidence: {avg_confidence:.0%} < {MIN_CONFIDENCE_SCORE:.0%} (required)")
+                else:
+                    print(f"   ✅ Confidence: {avg_confidence:.0%}")
+                    
                 return None, None
         
         print("❌ No face detected")
@@ -837,10 +908,15 @@ class SecuritySystem:
         print("  ⚡ Auto-Sampling + Strict Verification ⚡")
         print("  Thunder Robot 15n - Ryzen 7 5700U")
         print("="*60)
-        print(f"  🔒 Security Level: MAXIMUM")
-        print(f"     - {SAMPLES_PER_PERSON} diverse samples per person")
-        print(f"     - Distance threshold: {FACE_DISTANCE_THRESHOLD} (strict)")
-        print(f"     - Consistency required: {MIN_CONSISTENCY:.0%}")
+        print(f"  🔒 Security Configuration:")
+        print(f"     Registration:")
+        print(f"       • {SAMPLES_PER_PERSON} samples per person")
+        print(f"       • {MIN_FACE_CONFIDENCE:.0%} min face confidence")
+        print(f"     Verification:")
+        print(f"       • {FACE_DISTANCE_THRESHOLD} distance threshold")
+        print(f"       • {MIN_CONSISTENCY:.0%} consistency required")
+        print(f"       • {MIN_MATCH_FRAMES} min match frames")
+        print(f"       • {MIN_CONFIDENCE_SCORE:.0%} min confidence score")
         print("="*60)
         
         self.arduino = ArduinoController()
@@ -1046,13 +1122,40 @@ def main():
                     print("❌ Arduino not connected")
             
             elif choice == "9":
-                print("\n📊 Current Security Settings:")
+                print("\n" + "="*60)
+                print("📊 CURRENT SECURITY SETTINGS")
+                print("="*60)
+                print("\n🔧 Registration Settings:")
                 print(f"   Samples per person: {SAMPLES_PER_PERSON}")
-                print(f"   Distance threshold: {FACE_DISTANCE_THRESHOLD} (lower = stricter)")
-                print(f"   Min consistency: {MIN_CONSISTENCY:.0%}")
-                print(f"   Min match frames: {MIN_MATCH_FRAMES}")
-                print(f"   Verification time: {FACE_VERIFICATION_TIME}s")
                 print(f"   Auto-capture interval: {AUTO_CAPTURE_INTERVAL}s")
+                print(f"   Min face confidence: {MIN_FACE_CONFIDENCE:.0%}")
+                
+                print("\n🔒 Verification Settings:")
+                print(f"   Face distance threshold: {FACE_DISTANCE_THRESHOLD}")
+                print(f"      (Lower = stricter, 0.6 default, 0.4-0.5 strict)")
+                print(f"   Min consistency: {MIN_CONSISTENCY:.0%}")
+                print(f"      (% of frames that must match)")
+                print(f"   Min match frames: {MIN_MATCH_FRAMES}")
+                print(f"      (Absolute minimum matches required)")
+                print(f"   Min confidence score: {MIN_CONFIDENCE_SCORE:.0%}")
+                print(f"      (Average confidence required)")
+                print(f"   Verification time: {FACE_VERIFICATION_TIME}s")
+                
+                print("\n🎯 Gesture Settings:")
+                print(f"   Match threshold: {GESTURE_MATCH_THRESHOLD:.0%}")
+                print(f"   Timeout: {GESTURE_TIMEOUT}s")
+                
+                print("\n💡 Security Level: ", end="")
+                if FACE_DISTANCE_THRESHOLD <= 0.40 and MIN_CONSISTENCY >= 0.75:
+                    print("MAXIMUM 🔴")
+                elif FACE_DISTANCE_THRESHOLD <= 0.50 and MIN_CONSISTENCY >= 0.65:
+                    print("HIGH 🟡")
+                else:
+                    print("MEDIUM 🟢")
+                
+                print("\n📝 To modify settings, edit values at top of main.py:")
+                print("   Lines 18-27 (Configuration section)")
+                print("="*60)
             
             elif choice == "10":
                 print("\n👋 Goodbye!")
