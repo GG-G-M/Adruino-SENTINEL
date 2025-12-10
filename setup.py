@@ -8,6 +8,7 @@ def setup_environment():
     
     print("="*60)
     print("SETTING UP SECURITY SYSTEM ENVIRONMENT")
+    print("Auto-Sampling Face Recognition System")
     print("="*60)
     
     # 1. Create virtual environment
@@ -27,52 +28,120 @@ def setup_environment():
         python_path = os.path.join(venv_path, "bin", "python")
         pip_path = os.path.join(venv_path, "bin", "pip")
     
-    # 2. Install requirements
-    print("\n[2/3] Installing dependencies...")
+    # 2. Upgrade pip
+    print("\n[2/3] Upgrading pip...")
+    subprocess.run([python_path, "-m", "pip", "install", "--upgrade", "pip"], check=True)
+    
+    # 3. Install requirements
+    print("\n[3/3] Installing dependencies...")
+    print("This may take 5-10 minutes...")
+    
     requirements = [
         "opencv-python==4.8.1.78",
         "numpy==1.24.3",
         "Pillow==10.0.1",
         "mediapipe==0.10.8",
         "pyserial==3.5",
-        "face-recognition==1.3.0",
-        "face-recognition-models==0.3.0",
         "scikit-learn==1.3.0",
         "scipy==1.11.3",
         "pickle-mixin==1.0.2"
     ]
     
+    # Install core packages first
+    print("\n📦 Installing core packages...")
     for package in requirements:
-        print(f"Installing {package}...")
-        subprocess.run([pip_path, "install", package], check=True)
+        print(f"   Installing {package}...")
+        try:
+            subprocess.run([pip_path, "install", package], check=True, 
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            print(f"   ✅ {package}")
+        except subprocess.CalledProcessError as e:
+            print(f"   ⚠️ Warning: {package} - {e}")
     
-    # 3. Test installation
-    print("\n[3/3] Testing installation...")
+    # Install face-recognition (requires C++ build tools)
+    print("\n📦 Installing face-recognition (requires C++ Build Tools)...")
+    print("   This may take 5-10 minutes on first install...")
+    try:
+        subprocess.run([pip_path, "install", "face-recognition==1.3.0"], 
+                     check=True, timeout=600)
+        print("   ✅ face-recognition installed")
+    except subprocess.CalledProcessError as e:
+        print(f"   ❌ Failed to install face-recognition")
+        print(f"   Error: {e}")
+        print("\n⚠️ IMPORTANT: Install Visual Studio Build Tools:")
+        print("   https://visualstudio.microsoft.com/visual-cpp-build-tools/")
+        print("   Select: 'Desktop development with C++'")
+        return False
+    except subprocess.TimeoutExpired:
+        print("   ⚠️ Installation timeout - this is normal for face-recognition")
+        print("   Let it finish in the background...")
+    
+    # 4. Test installation
+    print("\n" + "="*60)
+    print("Testing installation...")
+    print("="*60)
+    
     test_code = """
-import cv2
-print(f"✅ OpenCV version: {cv2.__version__}")
-import numpy as np
-print(f"✅ NumPy version: {np.__version__}")
-import mediapipe as mp
-print("✅ MediaPipe imported successfully")
+import sys
+success = True
+
+try:
+    import cv2
+    print(f"✅ OpenCV version: {cv2.__version__}")
+except Exception as e:
+    print(f"❌ OpenCV: {e}")
+    success = False
+
+try:
+    import numpy as np
+    print(f"✅ NumPy version: {np.__version__}")
+except Exception as e:
+    print(f"❌ NumPy: {e}")
+    success = False
+
+try:
+    import mediapipe as mp
+    print("✅ MediaPipe imported successfully")
+except Exception as e:
+    print(f"❌ MediaPipe: {e}")
+    success = False
+
 try:
     import face_recognition
-    print("✅ Face Recognition imported successfully")
+    print("✅ face_recognition imported successfully")
+    print("✅ All dependencies installed correctly!")
 except Exception as e:
-    print(f"⚠️  Face Recognition warning: {e}")
+    print(f"⚠️ face_recognition: {e}")
+    print("   Run this command manually:")
+    print("   pip install face-recognition")
+    success = False
+
+sys.exit(0 if success else 1)
 """
     
-    subprocess.run([python_path, "-c", test_code])
+    result = subprocess.run([python_path, "-c", test_code])
     
-    print("\n" + "="*60)
-    print("✅ SETUP COMPLETE!")
-    print("To activate virtual environment:")
-    if sys.platform == "win32":
-        print(f"  {venv_path}\\Scripts\\activate")
+    if result.returncode == 0:
+        print("\n" + "="*60)
+        print("✅ SETUP COMPLETE!")
+        print("="*60)
+        print("To use the system:")
+        print("1. Activate virtual environment:")
+        if sys.platform == "win32":
+            print(f"   {venv_path}\\Scripts\\activate")
+        else:
+            print(f"   source {venv_path}/bin/activate")
+        print("2. Run the program:")
+        print("   python main.py")
+        print("="*60)
+        return True
     else:
-        print(f"  source {venv_path}/bin/activate")
-    print("Then run: python main.py")
-    print("="*60)
+        print("\n" + "="*60)
+        print("⚠️ SETUP INCOMPLETE")
+        print("="*60)
+        print("Please fix the errors above and run setup.py again")
+        return False
 
 if __name__ == "__main__":
-    setup_environment()
+    success = setup_environment()
+    sys.exit(0 if success else 1)
