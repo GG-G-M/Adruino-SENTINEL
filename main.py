@@ -17,68 +17,35 @@ except ImportError:
     print("⚠️ face_recognition not installed.")
 
 # ============================================
-# CONFIGURATION - OPTIMIZED FOR ACCURACY
-# ============================================
-# 🔧 EDIT THESE VALUES TO ADJUST SECURITY LEVEL
+# CONFIGURATION
 # ============================================
 
 REGISTERED_FOLDER = "authorized_faces"
 ENCODINGS_FILE = "face_encodings.pkl"
 GESTURES_FILE = "hand_gestures.pkl"
 
-# ============================================
-# 📸 REGISTRATION SETTINGS
-# ============================================
-SAMPLES_PER_PERSON = 10  # How many face samples to capture (More = better accuracy)
-                         # Recommended: 8-15 samples
-                         
-AUTO_CAPTURE_INTERVAL = 1.5  # Seconds between auto-captures
-                             # Recommended: 1.0-2.0 seconds
-                             
-MIN_FACE_CONFIDENCE = 0.80  # Minimum face detection quality (0.0-1.0)
-                            # Higher = only clear faces accepted
-                            # Recommended: 0.75-0.85
+# Registration Settings
+SAMPLES_PER_PERSON = 10
+AUTO_CAPTURE_INTERVAL = 1.5
+MIN_FACE_CONFIDENCE = 0.80
 
-# ============================================
-# 🔒 VERIFICATION SETTINGS (ANTI-FALSE POSITIVE)
-# ============================================
-FACE_DISTANCE_THRESHOLD = 0.45  # How similar faces must be (0.0-1.0)
-                                # Lower = stricter matching
-                                # 0.60 = default/loose
-                                # 0.45-0.50 = strict (recommended)
-                                # 0.35-0.40 = very strict (may reject valid users)
-                                
-MIN_CONSISTENCY = 0.60  # % of verification frames that must match (0.0-1.0)
-                        # Higher = more consistent recognition required
-                        # 0.60 = medium, 0.70 = high, 0.80+ = very strict
-                        
-MIN_MATCH_FRAMES = 5    # Minimum number of matching frames required
-                        # Acts as absolute minimum (even if consistency met)
-                        # Recommended: 3-7 frames
-                        
-MIN_CONFIDENCE_SCORE = 0.50  # Minimum average confidence (0.0-1.0)
-                             # Higher = only high-confidence matches accepted
-                             # 0.50 = medium, 0.60 = high, 0.70+ = very strict
-                             
-FACE_VERIFICATION_TIME = 5.0  # How long to verify face (seconds)
-                              # Longer = more chances to match
-                              # Recommended: 4-6 seconds
+# Verification Settings
+FACE_DISTANCE_THRESHOLD = 0.45  # Lower = stricter matching
+MIN_CONSISTENCY = 0.60  # Frame match rate required (How much face is within that frame)
+MIN_MATCH_FRAMES = 5  # Minimum frames needed for early exit
+MIN_CONFIDENCE_SCORE = 0.10  # Minimum face confidence (IMPORTANT MODIFY BASED ON THE AVERAGE CONSISTENCY) (How much Face is RECOGNIZE within that frame)
+FACE_VERIFICATION_TIME = 60  # Max authentication time (seconds)
 
-# ============================================
-# ✋ GESTURE SETTINGS
-# ============================================
-GESTURE_MATCH_THRESHOLD = 0.69  # How similar gesture must be (0.0-1.0)
-                                # Lower = stricter
-                                
-GESTURE_TIMEOUT = 6.9  # Time to show gesture (seconds)
+# Gesture Settings
+GESTURE_MATCH_THRESHOLD = 0.69
+GESTURE_TIMEOUT = 6.9
+GESTURE_TEST_TIMEOUT = 10.0
+GESTURE_DETECTION_CONFIDENCE = 0.5
+GESTURE_TRACKING_CONFIDENCE = 0.3
 
-GESTURE_DETECTION_CONFIDENCE = 0.5  # Hand detection sensitivity
-GESTURE_TRACKING_CONFIDENCE = 0.3   # Hand tracking sensitivity
+# Arduino Settings
+DOOR_UNLOCK_DURATION = 2.0
 
-# ============================================
-# 🚪 ARDUINO SETTINGS
-# ============================================
-DOOR_UNLOCK_DURATION = 2.0  # How long door stays unlocked (seconds)
 
 # ============================================
 # ARDUINO CONTROLLER
@@ -405,8 +372,13 @@ class FaceRecognition:
         cv2.destroyAllWindows()
         return False
     
-    def verify_face_continuous(self, duration=FACE_VERIFICATION_TIME):
-        """Continuous face verification with strict matching"""
+    def verify_face_continuous(self, duration=None):
+        """Continuous face verification with strict matching
+        
+        Args:
+            duration: Optional duration in seconds. If None, runs until unknown faces detected
+                     or manual exit with 'q' key.
+        """
         if not self.known_encodings:
             print("❌ No registered faces")
             return None, None
@@ -420,29 +392,41 @@ class FaceRecognition:
             print("❌ Cannot access camera")
             return None, None
         
-        print(f"👁️ Verifying face for {duration} seconds...")
+        if duration:
+            print(f"👁️ Verifying face for {duration} seconds...")
+        else:
+            print(f"👁️ Verifying face (auto-stop on unknown)...")
         print(f"🔒 Distance threshold: {FACE_DISTANCE_THRESHOLD} (strict)")
         print(f"🔒 Required consistency: {MIN_CONSISTENCY:.0%}")
         print(f"🔒 Minimum matches: {MIN_MATCH_FRAMES}")
+        print(f"🔒 Min confidence score: {MIN_CONFIDENCE_SCORE:.0%}")
+        print("Press 'q' to exit manually")
         
         start_time = time.time()
         total_frames = 0
         name_counts = {}
         confidence_scores = {}
         process_every_n_frames = 2
+        consecutive_unknown = 0  # Track consecutive unknown detections
+        max_consecutive_unknown = 3  # Stop after 3 consecutive unknowns
+        unauthorized_count = 0  # Count unauthorized/unknown faces
+        max_unauthorized = 5  # Auto-deny after 5 unauthorized detections
         
         # Warm up
         for _ in range(5):
             cap.read()
         
-        while time.time() - start_time < duration:
+        while True:
             ret, frame = cap.read()
             if not ret:
                 continue
             
             total_frames += 1
             elapsed = time.time() - start_time
-            remaining = duration - elapsed
+            
+            # Check if duration limit reached (if set)
+            if duration and elapsed >= duration:
+                break
             
             # Process every nth frame for speed
             if total_frames % process_every_n_frames == 0:
@@ -459,6 +443,7 @@ class FaceRecognition:
                         confidence = max(0, 1 - (best_distance / FACE_DISTANCE_THRESHOLD))
                         
                         if best_name != "Unknown":
+                            consecutive_unknown = 0  # Reset counter on known face
                             name_counts[best_name] = name_counts.get(best_name, 0) + 1
                             if best_name not in confidence_scores:
                                 confidence_scores[best_name] = []
@@ -469,21 +454,71 @@ class FaceRecognition:
                             color = (0, 255, 0)
                             label = f"{best_name}: {confidence:.0%}"
                         else:
+                            consecutive_unknown += 1
+                            unauthorized_count += 1
                             top, right, bottom, left = face_locations[0]
                             color = (0, 0, 255)
-                            label = "Unknown"
+                            label = f"Unknown ({unauthorized_count}/{max_unauthorized})"
+                            
+                            # Check if we should auto-deny due to too many unauthorized
+                            if duration and unauthorized_count >= max_unauthorized:
+                                print(f"\n🚫 AUTO-DENIED: {max_unauthorized} unauthorized face detections")
+                                cap.release()
+                                cv2.destroyAllWindows()
+                                return None, None
+                            
+                            # Check if we should stop (for no-timer mode)
+                            if not duration and consecutive_unknown >= max_consecutive_unknown:
+                                print(f"\n⚠️ Stopped: {max_consecutive_unknown} consecutive unknown faces detected")
+                                cap.release()
+                                cv2.destroyAllWindows()
+                                return None, None
                         
                         cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
                         cv2.putText(frame, label, (left, top - 10),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             
+            # Calculate current average face match confidence (not frame match rate!)
+            current_avg_face_confidence = 0
+            if name_counts:
+                best_current = max(name_counts, key=name_counts.get)
+                matches = name_counts[best_current]
+                processed = total_frames // process_every_n_frames
+                frame_match_rate = matches / processed if processed > 0 else 0
+                
+                # Calculate average confidence of face matches
+                if best_current in confidence_scores and confidence_scores[best_current]:
+                    current_avg_face_confidence = np.mean(confidence_scores[best_current])
+                
+                # Early exit if authorized user is verified (for authentication mode with timer)
+                if duration and elapsed >= 3.0:  # Minimum 3 seconds of verification
+                    # Check if all verification criteria are met
+                    if (frame_match_rate >= MIN_CONSISTENCY and 
+                        matches >= MIN_MATCH_FRAMES and 
+                        current_avg_face_confidence >= MIN_CONFIDENCE_SCORE):
+                        # User is verified! Break early
+                        print(f"\n✅ User verified early at {elapsed:.1f}s - proceeding to next step")
+                        break
+            
             # Display info
-            cv2.putText(frame, f"Verifying: {remaining:.1f}s", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            if duration:
+                remaining = duration - elapsed
+                cv2.putText(frame, f"Time: {remaining:.1f}s | Unauthorized: {unauthorized_count}/{max_unauthorized}", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            else:
+                cv2.putText(frame, f"Scanning... | Press 'q' to exit", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(frame, f"Unknown streak: {consecutive_unknown}/{max_consecutive_unknown}", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             
             fps = total_frames / (elapsed + 0.001)
-            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 60),
+            y_offset = 90 if not duration else 60
+            cv2.putText(frame, f"FPS: {fps:.1f}", (10, y_offset),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            
+            # Show average FACE MATCH confidence (not frame match rate)
+            cv2.putText(frame, f"Avg Face Confidence: {current_avg_face_confidence:.0%}", (10, y_offset + 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             
             if name_counts:
                 best_current = max(name_counts, key=name_counts.get)
@@ -492,8 +527,8 @@ class FaceRecognition:
                 consistency = matches / processed if processed > 0 else 0
                 
                 cv2.putText(frame, f"Matches: {matches}/{processed} ({consistency:.0%})", 
-                           (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                cv2.putText(frame, f"Name: {best_current}", (10, 120),
+                           (10, y_offset + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                cv2.putText(frame, f"Name: {best_current}", (10, y_offset + 90),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
             cv2.imshow("Face Verification", frame)
@@ -520,6 +555,7 @@ class FaceRecognition:
             print(f"   Matched frames: {match_count}")
             print(f"   Consistency: {consistency:.0%} (need {MIN_CONSISTENCY:.0%})")
             print(f"   Avg confidence: {avg_confidence:.0%} (need {MIN_CONFIDENCE_SCORE:.0%})")
+            print(f"   Unauthorized detections: {unauthorized_count}")
             
             # Strict verification checks
             passed_consistency = consistency >= MIN_CONSISTENCY
@@ -897,7 +933,146 @@ class HandGestureRecognition:
         else:
             print(f"❌ No gesture found for '{name}'")
             return False
-
+    
+    def test_gesture(self, person_name, timeout=GESTURE_TEST_TIMEOUT):
+        """Test gesture recognition for tweaking (10 second timer by default)
+        
+        Args:
+            person_name: Name of person whose gesture to test
+            timeout: Time limit in seconds (default 10s)
+        """
+        if person_name not in self.registered_gestures:
+            print(f"❌ No gesture registered for: {person_name}")
+            return False
+        
+        print(f"\n✋ Testing gesture for {person_name} ({timeout} seconds)")
+        print("This is for testing/tweaking only - shows similarity %")
+        print("Press 'q' to exit early")
+        
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                cap = cv2.VideoCapture(0)
+                if not cap.isOpened():
+                    print("❌ Cannot access camera")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print("🔄 Retrying...")
+                        time.sleep(1)
+                    continue
+                
+                # Warm up
+                for _ in range(5):
+                    cap.read()
+                
+                start_time = time.time()
+                registered_landmarks = self.registered_gestures[person_name]
+                best_match = 0.0  # Track best similarity seen
+                
+                while time.time() - start_time < timeout:
+                    ret, frame = cap.read()
+                    
+                    if not ret:
+                        continue
+                    
+                    remaining = timeout - (time.time() - start_time)
+                    
+                    try:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        results = self.hands.process(frame_rgb)
+                        
+                        if results.multi_hand_landmarks:
+                            for hand_landmarks in results.multi_hand_landmarks:
+                                self.mp_draw.draw_landmarks(
+                                    frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
+                                )
+                            
+                            # Calculate similarity
+                            current_landmarks = self._extract_landmarks(results.multi_hand_landmarks[0])
+                            
+                            # Normalize both
+                            reg_norm = registered_landmarks / (np.linalg.norm(registered_landmarks) + 1e-6)
+                            cur_norm = current_landmarks / (np.linalg.norm(current_landmarks) + 1e-6)
+                            
+                            similarity = 1 - np.linalg.norm(reg_norm - cur_norm)
+                            
+                            # Update best match
+                            if similarity > best_match:
+                                best_match = similarity
+                            
+                            # Color based on threshold
+                            if similarity > GESTURE_MATCH_THRESHOLD:
+                                color = (0, 255, 0)  # Green - matches!
+                                status = "MATCH!"
+                            elif similarity > GESTURE_MATCH_THRESHOLD * 0.8:
+                                color = (0, 255, 255)  # Yellow - close
+                                status = "CLOSE"
+                            else:
+                                color = (0, 165, 255)  # Orange - needs work
+                                status = "ADJUST"
+                            
+                            cv2.putText(frame, f"Similarity: {similarity:.0%} - {status}", 
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                            cv2.putText(frame, f"Threshold: {GESTURE_MATCH_THRESHOLD:.0%}", 
+                                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            cv2.putText(frame, f"Best: {best_match:.0%}", 
+                                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        else:
+                            cv2.putText(frame, "Show your hand gesture", (10, 30),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        
+                        # Timer display
+                        cv2.putText(frame, f"Time: {remaining:.1f}s", (10, frame.shape[0] - 50),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        cv2.putText(frame, "Press 'q' to exit", (10, frame.shape[0] - 20),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        
+                        cv2.imshow("Test Gesture", frame)
+                        key = cv2.waitKey(1) & 0xFF
+                        
+                        if key == ord('q'):
+                            print(f"\n📊 Test Results:")
+                            print(f"   Best match: {best_match:.0%}")
+                            print(f"   Threshold: {GESTURE_MATCH_THRESHOLD:.0%}")
+                            if best_match >= GESTURE_MATCH_THRESHOLD:
+                                print("   Status: ✅ Would pass verification")
+                            else:
+                                print("   Status: ❌ Would fail verification")
+                            cap.release()
+                            cv2.destroyAllWindows()
+                            return True
+                    
+                    except Exception as e:
+                        continue
+                
+                # Timeout reached
+                cap.release()
+                cv2.destroyAllWindows()
+                print(f"\n📊 Test Results:")
+                print(f"   Best match: {best_match:.0%}")
+                print(f"   Threshold: {GESTURE_MATCH_THRESHOLD:.0%}")
+                if best_match >= GESTURE_MATCH_THRESHOLD:
+                    print("   Status: ✅ Would pass verification")
+                else:
+                    print("   Status: ❌ Would fail verification")
+                return True
+            
+            except Exception as e:
+                print(f"❌ Camera error: {e}")
+                if 'cap' in locals():
+                    cap.release()
+                cv2.destroyAllWindows()
+                retry_count += 1
+                
+                if retry_count < max_retries:
+                    print(f"🔄 Retrying ({retry_count}/{max_retries})...")
+                    time.sleep(2)
+        
+        print(f"\n❌ Failed to test gesture after {max_retries} attempts")
+        return False
+    
 # ============================================
 # MAIN SECURITY SYSTEM
 # ============================================
@@ -976,7 +1151,8 @@ class SecuritySystem:
         print("="*60)
         
         print("\n[1/2] Face Verification")
-        person_name, confidence = self.face_recognition.verify_face_continuous()
+        print(f"📌 {FACE_VERIFICATION_TIME}-second timer with auto-deny after 5 unauthorized faces")
+        person_name, confidence = self.face_recognition.verify_face_continuous(duration=FACE_VERIFICATION_TIME)
         
         if person_name is None:
             print("\n❌ AUTHENTICATION FAILED: Face not verified")
@@ -1038,6 +1214,83 @@ class SecuritySystem:
         else:
             print(f"❌ User '{name}' not found")
     
+    def add_face_or_gesture(self):
+        """Add face samples or gesture for existing user"""
+        self.list_registered_users()
+        
+        if not self.face_recognition.known_encodings:
+            print("\n❌ No registered users. Register a person first (Option 1)")
+            return False
+        
+        print("\n" + "-"*40)
+        print("What would you like to add?")
+        print("1. Add More Face Samples")
+        print("2. Add/Update Gesture")
+        print("-"*40)
+        
+        choice = input("Choose (1-2): ").strip()
+        
+        if choice == "1":
+            # Add face samples
+            name = input("\nEnter person name: ").strip()
+            if name in self.face_recognition.known_encodings:
+                num = input(f"How many samples? (default {SAMPLES_PER_PERSON}): ").strip()
+                num = int(num) if num.isdigit() else SAMPLES_PER_PERSON
+                self.face_recognition.register_face(name=name, num_samples=num)
+            else:
+                print(f"❌ Person '{name}' not found")
+                
+        elif choice == "2":
+            # Add/update gesture
+            name = input("\nEnter person name to add/update gesture: ").strip()
+            
+            if name not in self.face_recognition.known_encodings:
+                print(f"❌ Person '{name}' not found")
+                return False
+            
+            print(f"\n🎯 Registering gesture for: {name}")
+            return self.gesture_recognition.register_gesture(name)
+        else:
+            print("❌ Invalid option")
+            return False
+    
+    def test_face_or_gesture(self):
+        """Test face or gesture recognition (for tweaking)"""
+        print("\n" + "-"*40)
+        print("What would you like to test?")
+        print("1. Test Face Recognition")
+        print("2. Test Gesture Recognition")
+        print("-"*40)
+        
+        choice = input("Choose (1-2): ").strip()
+        
+        if choice == "1":
+            # Test face recognition - no timer, auto-stop on unknown
+            print("\n👁️ Face Recognition Testing Mode")
+            print("This will scan continuously until unknown faces detected")
+            print("Perfect for tweaking settings and checking recognition quality")
+            name, conf = self.face_recognition.verify_face_continuous(duration=None)
+            if name:
+                print(f"\n✅ Recognition test complete")
+                print(f"   Detected: {name}")
+                print(f"   Confidence: {conf:.0%}")
+            else:
+                print("\n❌ Test stopped (unknown faces or manual exit)")
+                
+        elif choice == "2":
+            # Test gesture recognition - 10 second timer
+            self.list_registered_users()
+            person_name = input("\nEnter person name to test gesture: ").strip()
+            
+            if person_name not in self.face_recognition.known_encodings:
+                print(f"❌ Person '{person_name}' not found")
+                return False
+            
+            self.gesture_recognition.test_gesture(person_name, timeout=GESTURE_TEST_TIMEOUT)
+        else:
+            print("❌ Invalid option")
+            return False
+    
     def close(self):
         self.arduino.close()
 
@@ -1066,18 +1319,14 @@ def main():
             print("1. Register New Person (Auto-Capture)")
             print("2. Authenticate Person (Face + Gesture)")
             print("3. List Registered Users")
-            print("4. Add More Face Samples")
-            print("5. Test Face Recognition Only")
-            print("6. Test Gesture Recognition Only")
-            print("7. Delete User")
-            print("8. Test Arduino")
-            print("9. View Security Settings")
-            print("10. Exit")
-            print("-"*60)
-            print("11. Register/Update Gesture for Existing User")
+            print("4. Add More Face or Gesture for Existing User")
+            print("5. Test Face or Gesture")
+            print("6. Delete User")
+            print("7. Test Arduino")
+            print("8. Exit")
             print("-"*60)
             
-            choice = input("Choose option (1-11): ").strip()
+            choice = input("Choose option (1-8): ").strip()
             
             if choice == "1":
                 system.register_person()
@@ -1089,31 +1338,15 @@ def main():
                 system.list_registered_users()
             
             elif choice == "4":
-                system.list_registered_users()
-                name = input("\nEnter person name: ").strip()
-                if name in system.face_recognition.known_encodings:
-                    num = input(f"How many samples? (default {SAMPLES_PER_PERSON}): ").strip()
-                    num = int(num) if num.isdigit() else SAMPLES_PER_PERSON
-                    system.face_recognition.register_face(name=name, num_samples=num)
-                else:
-                    print(f"❌ Person '{name}' not found")
+                system.add_face_or_gesture()
             
             elif choice == "5":
-                name, conf = system.face_recognition.verify_face_continuous()
-                if name:
-                    print(f"✅ Recognized: {name} ({conf:.0%})")
-                else:
-                    print("❌ Face not recognized")
+                system.test_face_or_gesture()
             
             elif choice == "6":
-                system.list_registered_users()
-                person_name = input("\nEnter person name: ").strip()
-                system.gesture_recognition.verify_gesture(person_name)
-            
-            elif choice == "7":
                 system.delete_user()
             
-            elif choice == "8":
+            elif choice == "7":
                 print("\n🔧 Testing Arduino...")
                 if system.arduino.connected:
                     system.arduino.send_command("TEST")
@@ -1121,48 +1354,9 @@ def main():
                 else:
                     print("❌ Arduino not connected")
             
-            elif choice == "9":
-                print("\n" + "="*60)
-                print("📊 CURRENT SECURITY SETTINGS")
-                print("="*60)
-                print("\n🔧 Registration Settings:")
-                print(f"   Samples per person: {SAMPLES_PER_PERSON}")
-                print(f"   Auto-capture interval: {AUTO_CAPTURE_INTERVAL}s")
-                print(f"   Min face confidence: {MIN_FACE_CONFIDENCE:.0%}")
-                
-                print("\n🔒 Verification Settings:")
-                print(f"   Face distance threshold: {FACE_DISTANCE_THRESHOLD}")
-                print(f"      (Lower = stricter, 0.6 default, 0.4-0.5 strict)")
-                print(f"   Min consistency: {MIN_CONSISTENCY:.0%}")
-                print(f"      (% of frames that must match)")
-                print(f"   Min match frames: {MIN_MATCH_FRAMES}")
-                print(f"      (Absolute minimum matches required)")
-                print(f"   Min confidence score: {MIN_CONFIDENCE_SCORE:.0%}")
-                print(f"      (Average confidence required)")
-                print(f"   Verification time: {FACE_VERIFICATION_TIME}s")
-                
-                print("\n🎯 Gesture Settings:")
-                print(f"   Match threshold: {GESTURE_MATCH_THRESHOLD:.0%}")
-                print(f"   Timeout: {GESTURE_TIMEOUT}s")
-                
-                print("\n💡 Security Level: ", end="")
-                if FACE_DISTANCE_THRESHOLD <= 0.40 and MIN_CONSISTENCY >= 0.75:
-                    print("MAXIMUM 🔴")
-                elif FACE_DISTANCE_THRESHOLD <= 0.50 and MIN_CONSISTENCY >= 0.65:
-                    print("HIGH 🟡")
-                else:
-                    print("MEDIUM 🟢")
-                
-                print("\n📝 To modify settings, edit values at top of main.py:")
-                print("   Lines 18-27 (Configuration section)")
-                print("="*60)
-            
-            elif choice == "10":
+            elif choice == "8":
                 print("\n👋 Goodbye!")
                 break
-            
-            elif choice == "11":
-                system.register_gesture_for_user()
             
             else:
                 print("❌ Invalid option")
