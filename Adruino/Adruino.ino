@@ -14,18 +14,35 @@ Servo gateServo;
 #define ECHO_PIN 2
 
 // ============================================
-// SERVO SETTINGS (User configurable)
+// DOOR CONFIGURATION - MODIFY THESE SETTINGS
 // ============================================
-const int SERVO_CLOSED_ANGLE = 0;   // Closed/locked position
-const int SERVO_OPEN_ANGLE = 90;    // Open/unlocked position
-const int SERVO_MOVE_DELAY = 1500;  // Delay for servo to reach position (ms)
 
-// ============================================
-// SONAR SETTINGS
-// ============================================
-const int DETECTION_DISTANCE = 50;  // Distance in cm to trigger detection
+// DOOR MECHANISM SETTINGS
+// Set to true if your door opens clockwise when viewed from the servo side
+// Set to false if your door opens counter-clockwise
+const bool DOOR_OPENS_CLOCKWISE = true;
+
+// SPEED SETTINGS (0-100%)
+const int OPEN_SPEED = 60;           // Speed for opening rotation (0-100%)
+const int CLOSE_SPEED = 60;          // Speed for closing rotation (0-100%)
+
+// TIMING SETTINGS (milliseconds)
+const int DOOR_OPEN_DURATION = 5000;     // How long door stays open (5000ms = 5 seconds)
+const int DOOR_CLOSE_DELAY = 2000;       // Delay before closing starts (2000ms = 2 seconds)
+const int ROTATION_TIME = 3000;          // Time for complete door rotation (3000ms = 3 seconds)
+
+// SERVO CONTROL SETTINGS
+const int SERVO_NEUTRAL = 90;            // Stop position for continuous servo
+const int SPEED_SMOOTHING = 10;          // Smooth speed transitions (0-50)
+
+// Motor stop delay to prevent rapid direction changes
+const int MOTOR_COOLDOWN = 500;          // Minimum time between direction changes
 
 String currentCommand = "";
+
+// ============================================
+// SERVO CONTROL FUNCTIONS
+// ============================================
 
 void setup() {
   Serial.begin(9600);
@@ -39,16 +56,16 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Initializing...");
 
-  // ⚠️ CRITICAL: DO NOT attach servo in setup!
-  // This prevents the startup spin/twitch issue
-  // Servo will only be attached when needed (during GRANTED command)
-
   // Buzzer Setup
   pinMode(BUZZER_PIN, OUTPUT);
 
   // Sonar Setup
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
+
+  // Attach continuous servo
+  gateServo.attach(SERVO_PIN);
+  gateServo.write(SERVO_NEUTRAL); // Stop the continuous servo
 
   // Startup beep
   tone(BUZZER_PIN, 1500, 200);
@@ -61,7 +78,19 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Awaiting Auth...");
 
-  Serial.println("Arduino Ready - Servo will attach only on access grant");
+  Serial.println("Arduino Ready - Configurable Continuous Servo Control");
+  Serial.println("Configuration:");
+  Serial.print("  Door opens clockwise: ");
+  Serial.println(DOOR_OPENS_CLOCKWISE ? "YES" : "NO");
+  Serial.print("  Open speed: ");
+  Serial.print(OPEN_SPEED);
+  Serial.println("%");
+  Serial.print("  Close speed: ");
+  Serial.print(CLOSE_SPEED);
+  Serial.println("%");
+  Serial.print("  Open duration: ");
+  Serial.print(DOOR_OPEN_DURATION / 1000);
+  Serial.println("s");
 }
 
 void loop() {
@@ -69,36 +98,42 @@ void loop() {
   if (Serial.available() > 0) {
     currentCommand = Serial.readStringUntil('\n');
     currentCommand.trim();
+    currentCommand.toLowerCase();
 
     // Process commands
-    if (currentCommand == "GRANTED") {
+    if (currentCommand == "granted") {
       accessGranted();
-    } else if (currentCommand == "LOCK") {
+    } else if (currentCommand == "lock") {
       lockDoor();
-    } else if (currentCommand == "DENIED") {
+    } else if (currentCommand == "denied") {
       accessDenied();
-    } else if (currentCommand == "READY") {
+    } else if (currentCommand == "ready") {
       systemReady();
-    } else if (currentCommand == "FACE_VERIFIED") {
+    } else if (currentCommand == "face_verified") {
       faceVerified();
-    } else if (currentCommand == "GESTURE_REQUIRED") {
+    } else if (currentCommand == "gesture_required") {
       gestureRequired();
-    } else if (currentCommand == "TEST") {
+    } else if (currentCommand == "test") {
       testComponents();
-    } else if (currentCommand == "TEST_SONAR") {
+    } else if (currentCommand == "test_sonar") {
       testSonar();
-    } else if (currentCommand.startsWith("UNLOCK:")) {
-      // Custom unlock duration from Python
-      // Format: UNLOCK:5 (for 5 seconds)
-      int duration = currentCommand.substring(7).toInt();
-      accessGrantedCustomDuration(duration);
+    } else if (currentCommand == "right") {
+      rotateRight();
+    } else if (currentCommand == "left") {
+      rotateLeft();
+    } else if (currentCommand == "stop") {
+      stopMotor();
+    } else if (currentCommand.startsWith("speed")) {
+      int speed = currentCommand.substring(5).toInt();
+      setSpeed(speed);
     }
   }
 }
 
 // ============================================
-// ACCESS GRANTED - Python controls timing
+// DOOR CONTROL FUNCTIONS
 // ============================================
+
 void accessGranted() {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -110,31 +145,86 @@ void accessGranted() {
   tone(BUZZER_PIN, 2000, 800);
   delay(800);
 
-  // ✅ Attach servo ONLY when needed
-  gateServo.attach(SERVO_PIN);
-  delay(50);  // Small delay for servo to initialize
-
-  // Open gate
-  gateServo.write(SERVO_OPEN_ANGLE);
-  delay(SERVO_MOVE_DELAY);
+  // Open door
+  openDoor();
 
   // Send signal to Python that door is open
   Serial.println("DOOR_OPEN");
 
-  // Python will send "LOCK" command when ready to close
-  // Don't close automatically - let Python control timing
+  // Display door open countdown
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Door Open");
+
+  // Wait for configured duration
+  int countdown = DOOR_OPEN_DURATION / 1000;
+  for (int i = countdown; i > 0; i--) {
+    lcd.setCursor(0, 1);
+    lcd.print("Closing in ");
+    lcd.print(i);
+    lcd.print("s ");
+    delay(1000);
+  }
+
+  // Close door
+  closeDoor();
+
+  // Update LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Door Locked");
+  delay(1000);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("System Ready");
+  lcd.setCursor(0, 1);
+  lcd.print("Awaiting Auth...");
+
+  // Send signal to Python that door is locked
+  Serial.println("DOOR_LOCKED");
 }
 
-// ============================================
-// LOCK DOOR (Called by Python)
-// ============================================
-void lockDoor() {
-  // Close gate
-  gateServo.write(SERVO_CLOSED_ANGLE);
-  delay(SERVO_MOVE_DELAY);
+void openDoor() {
+  Serial.println("Opening door...");
+  
+  // Determine rotation direction based on configuration
+  if (DOOR_OPENS_CLOCKWISE) {
+    Serial.println("  Opening clockwise");
+    rotateClockwise();
+  } else {
+    Serial.println("  Opening counter-clockwise");
+    rotateCounterClockwise();
+  }
+  
+  // Run for the configured rotation time
+  delay(ROTATION_TIME);
+  stopMotor();
+  
+  Serial.println("Door opened");
+}
 
-  // ✅ Detach servo to prevent jitter/spin
-  gateServo.detach();
+void closeDoor() {
+  Serial.println("Closing door...");
+  
+  // Determine rotation direction based on configuration (opposite of opening)
+  if (DOOR_OPENS_CLOCKWISE) {
+    Serial.println("  Closing counter-clockwise");
+    rotateCounterClockwise();
+  } else {
+    Serial.println("  Closing clockwise");
+    rotateClockwise();
+  }
+  
+  // Run for the configured rotation time
+  delay(ROTATION_TIME);
+  stopMotor();
+  
+  Serial.println("Door closed");
+}
+
+void lockDoor() {
+  closeDoor();
 
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -146,52 +236,58 @@ void lockDoor() {
 }
 
 // ============================================
-// CUSTOM DURATION ACCESS (Optional)
+// SERVO MOTOR CONTROL
 // ============================================
-void accessGrantedCustomDuration(int seconds) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("ACCESS GRANTED");
-  lcd.setCursor(0, 1);
-  lcd.print("Welcome!");
 
-  tone(BUZZER_PIN, 2000, 800);
-  delay(800);
+void rotateClockwise() {
+  Serial.println("→ Rotating CLOCKWISE");
+  int pwm = map(OPEN_SPEED, 0, 100, SERVO_NEUTRAL, 0);
+  gateServo.write(pwm);
+  Serial.print("PWM: ");
+  Serial.println(pwm);
+}
 
-  // Attach and open
-  gateServo.attach(SERVO_PIN);
-  delay(50);
-  gateServo.write(SERVO_OPEN_ANGLE);
-  delay(SERVO_MOVE_DELAY);
+void rotateCounterClockwise() {
+  Serial.println("← Rotating COUNTER-CLOCKWISE");
+  int pwm = map(CLOSE_SPEED, 0, 100, SERVO_NEUTRAL, 180);
+  gateServo.write(pwm);
+  Serial.print("PWM: ");
+  Serial.println(pwm);
+}
 
-  // Keep open for specified duration
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Door Open");
+void rotateRight() {
+  Serial.println("→ Rotating RIGHT (clockwise)");
+  int pwm = map(OPEN_SPEED, 0, 100, SERVO_NEUTRAL, 0);
+  gateServo.write(pwm);
+  Serial.print("PWM: ");
+  Serial.println(pwm);
+}
 
-  for (int i = seconds; i > 0; i--) {
-    lcd.setCursor(0, 1);
-    lcd.print("Closing in ");
-    lcd.print(i);
-    lcd.print("s ");
-    delay(1000);
-  }
+void rotateLeft() {
+  Serial.println("← Rotating LEFT (counter-clockwise)");
+  int pwm = map(CLOSE_SPEED, 0, 100, SERVO_NEUTRAL, 180);
+  gateServo.write(pwm);
+  Serial.print("PWM: ");
+  Serial.println(pwm);
+}
 
-  // Close and detach
-  gateServo.write(SERVO_CLOSED_ANGLE);
-  delay(SERVO_MOVE_DELAY);
-  gateServo.detach();
+void stopMotor() {
+  Serial.println("■ STOPPING motor");
+  gateServo.write(SERVO_NEUTRAL); // Stop the continuous servo
+  delay(MOTOR_COOLDOWN); // Cool down period
+}
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("System Ready");
-  lcd.setCursor(0, 1);
-  lcd.print("Awaiting Auth...");
+void setSpeed(int speed) {
+  Serial.print("Speed set to: ");
+  Serial.print(speed);
+  Serial.println("%");
+  // Note: Speed is used in rotation functions via the configuration constants
 }
 
 // ============================================
-// ACCESS DENIED
+// SYSTEM FUNCTIONS
 // ============================================
+
 void accessDenied() {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -214,9 +310,6 @@ void accessDenied() {
   lcd.print("Awaiting Auth...");
 }
 
-// ============================================
-// SYSTEM READY
-// ============================================
 void systemReady() {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -227,9 +320,6 @@ void systemReady() {
   tone(BUZZER_PIN, 1500, 300);
 }
 
-// ============================================
-// FACE VERIFIED
-// ============================================
 void faceVerified() {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -243,9 +333,6 @@ void faceVerified() {
   tone(BUZZER_PIN, 1500, 200);
 }
 
-// ============================================
-// GESTURE REQUIRED
-// ============================================
 void gestureRequired() {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -259,9 +346,6 @@ void gestureRequired() {
   }
 }
 
-// ============================================
-// TEST COMPONENTS
-// ============================================
 void testComponents() {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -271,24 +355,43 @@ void testComponents() {
 
   delay(500);
 
-  // Test servo
+  // Test continuous servo functionality
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Testing Servo");
 
-  gateServo.attach(SERVO_PIN);
-  delay(50);
-
-  // Open
-  gateServo.write(SERVO_OPEN_ANGLE);
-  delay(SERVO_MOVE_DELAY);
-
-  // Close
-  gateServo.write(SERVO_CLOSED_ANGLE);
-  delay(SERVO_MOVE_DELAY);
-
-  // Detach
-  gateServo.detach();
+  Serial.println("Testing continuous servo...");
+  
+  // Test rotating right
+  Serial.println("Testing right rotation...");
+  lcd.setCursor(0, 1);
+  lcd.print("Right...");
+  rotateRight();
+  delay(2000);
+  stopMotor();
+  delay(500);
+  
+  // Test rotating left
+  Serial.println("Testing left rotation...");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Testing Servo");
+  lcd.setCursor(0, 1);
+  lcd.print("Left...");
+  rotateLeft();
+  delay(2000);
+  stopMotor();
+  delay(500);
+  
+  // Test stop
+  Serial.println("Testing stop...");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Testing Servo");
+  lcd.setCursor(0, 1);
+  lcd.print("Stop...");
+  stopMotor();
+  delay(1000);
 
   // Test buzzer
   lcd.clear();
@@ -301,6 +404,7 @@ void testComponents() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Test Complete");
+  Serial.println("Test Complete");
   delay(2000);
 
   lcd.clear();

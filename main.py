@@ -46,6 +46,17 @@ GESTURE_TRACKING_CONFIDENCE = 0.3
 # Arduino Settings
 DOOR_UNLOCK_DURATION = 2.0
 
+# DOOR CONFIGURATION
+# These settings should match your Arduino configuration
+DOOR_OPENS_CLOCKWISE = True        # Must match Arduino's DOOR_OPENS_CLOCKWISE setting
+DOOR_OPEN_SPEED = 60              # Opening speed percentage (0-100)
+DOOR_CLOSE_SPEED = 60             # Closing speed percentage (0-100)
+DOOR_OPEN_DURATION = 5.0          # How long door stays open (seconds)
+DOOR_CLOSE_DELAY = 2.0            # Delay before closing starts (seconds)
+DOOR_ROTATION_TIME = 3.0          # Time for complete door rotation (seconds)
+
+# Calculate total door sequence time for proper waiting
+DOOR_TOTAL_SEQUENCE_TIME = DOOR_ROTATION_TIME + DOOR_OPEN_DURATION + DOOR_CLOSE_DELAY + DOOR_ROTATION_TIME
 
 # ============================================
 # ARDUINO CONTROLLER
@@ -94,29 +105,32 @@ class ArduinoController:
             return True
     
     def access_granted(self):
-        print("🚪 ACCESS GRANTED - Activating devices...")
-        self.send_command("GRANTED")
-        print(f"🔓 Door unlocked for {DOOR_UNLOCK_DURATION} seconds...")
-        time.sleep(DOOR_UNLOCK_DURATION)
-        self.send_command("LOCK")
-        print("🔒 Door locked")
+        print("ACCESS GRANTED - Activating devices...")
+        success = self.send_command("granted")
+        if success:
+            # Wait for door to complete its sequence
+            print("🔓 Door opening and closing automatically...")
+            # Wait for Arduino to complete its sequence
+            time.sleep(DOOR_TOTAL_SEQUENCE_TIME + 2)  # Use configured timing + buffer
+            print("✅ Door sequence completed")
+        return success
     
     def access_denied(self):
         print("🚫 ACCESS DENIED - Activating alert...")
-        self.send_command("DENIED")
+        self.send_command("denied")
     
     def system_ready(self):
-        self.send_command("READY")
+        self.send_command("ready")
     
     def face_verified(self):
-        self.send_command("FACE_VERIFIED")
+        self.send_command("face_verified")
     
     def gesture_required(self):
-        self.send_command("GESTURE_REQUIRED")
+        self.send_command("gesture_required")
     
     def test_sonar(self):
         """Test sonar sensor for 5 seconds"""
-        print("\\n📡 Testing Sonar Sensor...")
+        print("\n📡 Testing Sonar Sensor...")
         print("   Duration: 5 seconds")
         print("   Reading distance every 0.5s")
         print("=" * 60)
@@ -131,7 +145,7 @@ class ArduinoController:
             self.arduino.reset_input_buffer()
             
             # Send test command
-            self.send_command("TEST_SONAR")
+            self.send_command("test_sonar")
             
             # Read distance measurements for ~5 seconds
             start_time = time.time()
@@ -161,6 +175,70 @@ class ArduinoController:
             
         except Exception as e:
             print(f"❌ Sonar test failed: {e}")
+    
+    def test_servo(self):
+        """Test continuous servo functionality"""
+        print("\n⚙️ Testing Continuous Servo...")
+        print("   Testing right, left, and stop movements")
+        print("=" * 60)
+        
+        if not self.connected:
+            print("⚠️ Arduino not connected - simulation mode")
+            print("🔌 [SIMULATION] Would send servo test commands")
+            return
+        
+        try:
+            # Test right rotation
+            print("Testing RIGHT rotation...")
+            self.send_command("right")
+            time.sleep(2)
+            
+            print("Stopping...")
+            self.send_command("stop")
+            time.sleep(1)
+            
+            # Test left rotation
+            print("Testing LEFT rotation...")
+            self.send_command("left")
+            time.sleep(2)
+            
+            print("Stopping...")
+            self.send_command("stop")
+            time.sleep(1)
+            
+            # Test speed change
+            print("Testing speed change...")
+            self.send_command("speed50")
+            time.sleep(1)
+            self.send_command("right")
+            time.sleep(2)
+            self.send_command("stop")
+            
+            print("=" * 60)
+            print("✅ Servo test complete")
+            
+        except Exception as e:
+            print(f"❌ Servo test failed: {e}")
+    
+    def servo_right(self):
+        """Rotate servo right (clockwise)"""
+        print("🔄 Rotating servo RIGHT...")
+        self.send_command("right")
+        
+    def servo_left(self):
+        """Rotate servo left (counter-clockwise)"""
+        print("🔄 Rotating servo LEFT...")
+        self.send_command("left")
+        
+    def servo_stop(self):
+        """Stop servo rotation"""
+        print("🛑 Stopping servo...")
+        self.send_command("stop")
+        
+    def servo_set_speed(self, speed):
+        """Set servo speed (0-100)"""
+        print(f"⚡ Setting servo speed to {speed}%...")
+        self.send_command(f"speed{speed}")
     
     def close(self):
         if self.connected and self.arduino:
@@ -1129,7 +1207,7 @@ class SecuritySystem:
         print("\n" + "="*60)
         print("  DUAL AUTHENTICATION SECURITY SYSTEM")
         print("  ⚡ Auto-Sampling + Strict Verification ⚡")
-        print("  Thunder Robot 15n - Ryzen 7 5700U")
+        print("  Continuous Servo Control")
         print("="*60)
         print(f"  🔒 Security Configuration:")
         print(f"     Registration:")
@@ -1166,7 +1244,7 @@ class SecuritySystem:
             choice = input("Keep face registration without gesture? (y/n): ").strip().lower()
             if choice == 'y':
                 print(f"✅ {name} registered with FACE ONLY")
-                print("💡 You can add gesture later using Option 11")
+                print("💡 You can add gesture later using Option 4")
                 return True
             else:
                 self.face_recognition.delete_person(name)
@@ -1345,6 +1423,41 @@ class SecuritySystem:
             print("❌ Invalid option")
             return False
     
+    def test_servo_manual(self):
+        """Manual servo control for testing"""
+        print("\n" + "-"*40)
+        print("Manual Servo Control:")
+        print("1. Rotate Right")
+        print("2. Rotate Left")
+        print("3. Stop")
+        print("4. Set Speed")
+        print("5. Back to Main Menu")
+        print("-"*40)
+        
+        while True:
+            choice = input("Choose (1-5): ").strip()
+            
+            if choice == "1":
+                self.arduino.servo_right()
+            elif choice == "2":
+                self.arduino.servo_left()
+            elif choice == "3":
+                self.arduino.servo_stop()
+            elif choice == "4":
+                speed = input("Enter speed (0-100): ").strip()
+                if speed.isdigit():
+                    speed_val = int(speed)
+                    if 0 <= speed_val <= 100:
+                        self.arduino.servo_set_speed(speed_val)
+                    else:
+                        print("❌ Speed must be between 0-100")
+                else:
+                    print("❌ Invalid speed value")
+            elif choice == "5":
+                break
+            else:
+                print("❌ Invalid option")
+    
     def close(self):
         self.arduino.close()
 
@@ -1378,10 +1491,12 @@ def main():
             print("6. Delete User")
             print("7. Test Arduino")
             print("8. Test Sonar Sensor")
-            print("9. Exit")
+            print("9. Test Servo System")
+            print("10. Manual Servo Control")
+            print("11. Exit")
             print("-"*60)
             
-            choice = input("Choose option (1-9): ").strip()
+            choice = input("Choose option (1-11): ").strip()
             
             if choice == "1":
                 system.register_person()
@@ -1404,7 +1519,7 @@ def main():
             elif choice == "7":
                 print("\n🔧 Testing Arduino...")
                 if system.arduino.connected:
-                    system.arduino.send_command("TEST")
+                    system.arduino.send_command("test")
                     print("✅ Test command sent")
                 else:
                     print("❌ Arduino not connected")
@@ -1413,6 +1528,12 @@ def main():
                 system.arduino.test_sonar()
             
             elif choice == "9":
+                system.arduino.test_servo()
+            
+            elif choice == "10":
+                system.test_servo_manual()
+            
+            elif choice == "11":
                 print("\n👋 Goodbye!")
                 break
             
