@@ -114,6 +114,54 @@ class ArduinoController:
     def gesture_required(self):
         self.send_command("GESTURE_REQUIRED")
     
+    def test_sonar(self):
+        """Test sonar sensor for 5 seconds"""
+        print("\\n📡 Testing Sonar Sensor...")
+        print("   Duration: 5 seconds")
+        print("   Reading distance every 0.5s")
+        print("=" * 60)
+        
+        if not self.connected:
+            print("⚠️ Arduino not connected - simulation mode")
+            print("🔌 [SIMULATION] Would send TEST_SONAR command")
+            return
+        
+        try:
+            # Clear any pending serial data
+            self.arduino.reset_input_buffer()
+            
+            # Send test command
+            self.send_command("TEST_SONAR")
+            
+            # Read distance measurements for ~5 seconds
+            start_time = time.time()
+            measurement_count = 0
+            
+            while time.time() - start_time < 6:  # 6 seconds to ensure we get all data
+                if self.arduino.in_waiting > 0:
+                    try:
+                        line = self.arduino.readline().decode('utf-8').strip()
+                        
+                        if line.startswith("DISTANCE:"):
+                            measurement_count += 1
+                            distance_str = line.replace("DISTANCE:", "")
+                            
+                            if distance_str == "ERROR":
+                                print(f"📏 Reading {measurement_count}: No echo detected (sensor error)")
+                            else:
+                                print(f"📏 Reading {measurement_count}: {distance_str}")
+                        
+                    except Exception as e:
+                        print(f"⚠️ Error reading: {e}")
+                        
+                time.sleep(0.1)  # Small delay to prevent CPU spinning
+            
+            print("=" * 60)
+            print(f"✅ Sonar test complete - {measurement_count} measurements received")
+            
+        except Exception as e:
+            print(f"❌ Sonar test failed: {e}")
+    
     def close(self):
         if self.connected and self.arduino:
             self.arduino.close()
@@ -1214,6 +1262,12 @@ class SecuritySystem:
         else:
             print(f"❌ User '{name}' not found")
     
+    def delete_user_by_name(self, name):
+        """Delete user by name (for GUI)"""
+        face_deleted = self.face_recognition.delete_person(name)
+        gesture_deleted = self.gesture_recognition.delete_gesture(name)
+        return face_deleted or gesture_deleted
+    
     def add_face_or_gesture(self):
         """Add face samples or gesture for existing user"""
         self.list_registered_users()
@@ -1323,10 +1377,11 @@ def main():
             print("5. Test Face or Gesture")
             print("6. Delete User")
             print("7. Test Arduino")
-            print("8. Exit")
+            print("8. Test Sonar Sensor")
+            print("9. Exit")
             print("-"*60)
             
-            choice = input("Choose option (1-8): ").strip()
+            choice = input("Choose option (1-9): ").strip()
             
             if choice == "1":
                 system.register_person()
@@ -1355,6 +1410,9 @@ def main():
                     print("❌ Arduino not connected")
             
             elif choice == "8":
+                system.arduino.test_sonar()
+            
+            elif choice == "9":
                 print("\n👋 Goodbye!")
                 break
             
