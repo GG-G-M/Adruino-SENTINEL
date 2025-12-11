@@ -43,7 +43,7 @@ class SecurityGUI:
                        focuscolor='none',
                        font=('Segoe UI', 11))
         style.map('Menu.TButton',
-                 background=[('active', self.colors['hover'])])
+                  background=[('active', self.colors['hover'])])
         
         style.configure('Title.TLabel',
                        background=self.colors['bg'],
@@ -79,13 +79,14 @@ class SecurityGUI:
         menu_frame.pack(pady=20)
         
         buttons = [
+            ("📡 Start System (Sensor-Triggered Authentication)", self.start_system),
             ("📝 Register New Person", self.register_person),
             ("🔐 Authenticate", self.authenticate),
             ("👥 List Users", self.list_users),
             ("➕ Add Face/Gesture", self.add_face_gesture),
             ("🧪 Test Recognition", self.test_recognition),
+            ("🔧 Test External Devices", self.test_external_devices),
             ("🗑️ Delete User", self.delete_user),
-            ("🔧 Test Arduino", self.test_arduino),
             ("🚪 Exit", self.exit_app)
         ]
         
@@ -112,6 +113,27 @@ class SecurityGUI:
                                 text=f"Status: Ready | Users: {users_count} | Arduino: {'Connected' if self.system.arduino.connected else 'Simulation'}",
                                 style='Info.TLabel')
         status_label.pack(pady=10)
+    
+    def start_system(self):
+        """Start sensor-triggered authentication system"""
+        # Check if users are registered
+        if not self.system.face_recognition.known_encodings:
+            messagebox.showwarning("Warning", "No registered users found!\nPlease register users first.")
+            return
+        
+        # Start system in thread
+        threading.Thread(target=self._start_system_thread, daemon=True).start()
+    
+    def _start_system_thread(self):
+        """Start system thread"""
+        try:
+            result = self.system.start_system()
+            if result:
+                messagebox.showinfo("Success", "System authentication successful! Access granted.")
+            else:
+                messagebox.showerror("Failed", "System authentication failed. Access denied.")
+        except Exception as e:
+            messagebox.showerror("Error", f"System authentication failed: {e}")
     
     def register_person(self):
         """Register new person with GUI input"""
@@ -180,7 +202,7 @@ class SecurityGUI:
         
         # Users list
         for user in users:
-            has_gesture = user in self.system.gesture_recognition.gestures
+            has_gesture = user in self.system.gesture_recognition.registered_gestures
             samples = len(self.system.face_recognition.known_encodings[user])
             
             user_frame = tk.Frame(dialog, bg=self.colors['card_bg'])
@@ -287,6 +309,65 @@ class SecurityGUI:
                  bg=self.colors['accent'], fg=self.colors['fg'],
                  font=('Segoe UI', 11), width=20, height=2).pack(pady=5)
     
+    def test_external_devices(self):
+        """Test all external devices submenu"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Test External Devices")
+        dialog.geometry("450x500")
+        dialog.configure(bg=self.colors['bg'])
+        
+        tk.Label(dialog, text="🔧 External Devices Testing", 
+                bg=self.colors['bg'], fg=self.colors['fg'],
+                font=('Segoe UI', 14, 'bold')).pack(pady=20)
+        
+        def test_face():
+            dialog.destroy()
+            threading.Thread(target=self._test_face, daemon=True).start()
+        
+        def test_gesture():
+            dialog.destroy()
+            self._test_gesture()
+        
+        def test_arduino():
+            dialog.destroy()
+            self._test_arduino()
+        
+        def test_sonar():
+            dialog.destroy()
+            threading.Thread(target=self.system.arduino.test_sonar, daemon=True).start()
+        
+        def test_servo():
+            dialog.destroy()
+            threading.Thread(target=self.system.arduino.test_servo, daemon=True).start()
+        
+        def manual_servo():
+            dialog.destroy()
+            self._manual_servo_control()
+        
+        tk.Button(dialog, text="👁️ Test Face Recognition", command=test_face,
+                 bg=self.colors['card_bg'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=25, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="✋ Test Gesture Recognition", command=test_gesture,
+                 bg=self.colors['card_bg'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=25, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="🔧 Test Arduino", command=test_arduino,
+                 bg=self.colors['card_bg'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=25, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="📡 Test Sonar Sensor", command=test_sonar,
+                 bg=self.colors['card_bg'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=25, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="⚙️ Test Servo System", command=test_servo,
+                 bg=self.colors['card_bg'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=25, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="🎮 Manual Servo Control", command=manual_servo,
+                 bg=self.colors['card_bg'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=25, height=2).pack(pady=5)
+    
     def _test_face(self):
         try:
             name, conf = self.system.face_recognition.verify_face_continuous(duration=None)
@@ -298,7 +379,7 @@ class SecurityGUI:
             messagebox.showerror("Error", f"Test failed: {e}")
     
     def _test_gesture(self):
-        users = list(self.system.gesture_recognition.gestures.keys())
+        users = list(self.system.gesture_recognition.registered_gestures.keys())
         if not users:
             messagebox.showwarning("Warning", "No registered gestures")
             return
@@ -314,6 +395,61 @@ class SecurityGUI:
             self.system.gesture_recognition.test_gesture(name)
         except Exception as e:
             messagebox.showerror("Error", f"Test failed: {e}")
+    
+    def _test_arduino(self):
+        if self.system.arduino.connected:
+            self.system.arduino.send_command("TEST")
+            messagebox.showinfo("Arduino Test", "Test command sent")
+        else:
+            messagebox.showwarning("Arduino", "Arduino not connected - running in simulation mode")
+    
+    def _manual_servo_control(self):
+        """Manual servo control dialog"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Manual Servo Control")
+        dialog.geometry("400x300")
+        dialog.configure(bg=self.colors['bg'])
+        
+        tk.Label(dialog, text="🎮 Manual Servo Control", 
+                bg=self.colors['bg'], fg=self.colors['fg'],
+                font=('Segoe UI', 14, 'bold')).pack(pady=20)
+        
+        def servo_right():
+            self.system.arduino.servo_right()
+        
+        def servo_left():
+            self.system.arduino.servo_left()
+        
+        def servo_stop():
+            self.system.arduino.servo_stop()
+        
+        def set_speed():
+            speed_str = simpledialog.askstring("Set Speed", "Enter speed (0-100):", initialvalue="60")
+            if speed_str and speed_str.isdigit():
+                speed_val = int(speed_str)
+                if 0 <= speed_val <= 100:
+                    self.system.arduino.servo_set_speed(speed_val)
+                    messagebox.showinfo("Success", f"Speed set to {speed_val}%")
+                else:
+                    messagebox.showerror("Error", "Speed must be between 0-100")
+            elif speed_str:
+                messagebox.showerror("Error", "Invalid speed value")
+        
+        tk.Button(dialog, text="🔄 Rotate Right", command=servo_right,
+                 bg=self.colors['success'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=15, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="🔄 Rotate Left", command=servo_left,
+                 bg=self.colors['success'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=15, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="🛑 Stop", command=servo_stop,
+                 bg=self.colors['danger'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=15, height=2).pack(pady=5)
+        
+        tk.Button(dialog, text="⚡ Set Speed", command=set_speed,
+                 bg=self.colors['accent'], fg=self.colors['fg'],
+                 font=('Segoe UI', 11), width=15, height=2).pack(pady=5)
     
     def delete_user(self):
         """Delete user"""
@@ -365,14 +501,6 @@ class SecurityGUI:
         
         dialog.wait_window()
         return result[0]
-    
-    def test_arduino(self):
-        """Test Arduino"""
-        if self.system.arduino.connected:
-            self.system.arduino.send_command("TEST")
-            messagebox.showinfo("Arduino Test", "Test command sent")
-        else:
-            messagebox.showwarning("Arduino", "Arduino not connected - running in simulation mode")
     
     def exit_app(self):
         """Exit application"""

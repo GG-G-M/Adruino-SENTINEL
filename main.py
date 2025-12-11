@@ -1226,6 +1226,106 @@ class SecuritySystem:
         
         self.arduino.system_ready()
     
+    def start_system(self):
+        """Start system monitoring with sonar sensor integration"""
+        print("\n" + "="*60)
+        print("  🚀 STARTING SECURITY SYSTEM")
+        print("  Sonar Sensor: ACTIVE (30cm detection range)")
+        print("  Face Recognition: STAND BY")
+        print("="*60)
+        print("📡 Monitoring for person detection...")
+        print("👤 Step within 30cm of sensor to trigger authentication")
+        print("⏹️  Press Ctrl+C to stop monitoring and return to menu")
+        print("="*60)
+        
+        # Send ready command to Arduino to ensure it's monitoring
+        self.arduino.system_ready()
+        
+        # Start monitoring for person detection
+        if not self._monitor_person_detection():
+            print("\n👋 System monitoring stopped")
+            return
+        
+        # Person detected - start authentication process
+        print("\n" + "="*60)
+        print("  👤 PERSON DETECTED - STARTING AUTHENTICATION")
+        print("="*60)
+        
+        # Perform authentication
+        auth_success = self.authenticate_person()
+        
+        if auth_success:
+            print("\n✅ Authentication completed successfully!")
+            print("🔄 Returning to monitoring...")
+            time.sleep(3)
+            # Continue monitoring after successful auth
+            self.start_system()
+        else:
+            print("\n❌ Authentication failed!")
+            print("🔄 Returning to monitoring...")
+            time.sleep(3)
+            # Continue monitoring after failed auth
+            self.start_system()
+    
+    def _monitor_person_detection(self):
+        """Monitor serial port for PERSON_DETECTED signal from Arduino"""
+        if not self.arduino.connected:
+            print("⚠️ Arduino not connected - cannot monitor sonar sensor")
+            print("💡 Please connect Arduino and restart system")
+            input("Press Enter to return to menu...")
+            return False
+        
+        try:
+            # Clear any pending data
+            self.arduino.arduino.reset_input_buffer()
+            
+            print("\n🔍 Listening for person detection...")
+            start_time = time.time()
+            
+            while True:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                
+                # Check if Arduino has sent data
+                if self.arduino.arduino.in_waiting > 0:
+                    try:
+                        line = self.arduino.arduino.readline().decode('utf-8').strip()
+                        
+                        if line == "PERSON_DETECTED":
+                            print("\n🎯 PERSON DETECTED! Starting authentication...")
+                            return True
+                        elif line.startswith("DISTANCE:"):
+                            # Optional: Show distance readings for debugging
+                            distance_str = line.replace("DISTANCE:", "")
+                            if distance_str != "ERROR":
+                                try:
+                                    distance = float(distance_str.replace("cm", ""))
+                                    if distance <= 50:  # Show if within 50cm
+                                        print(f"📏 Distance: {distance:.1f}cm", end='\r')
+                                except:
+                                    pass
+                        elif line:
+                            print(f"📨 Arduino: {line}")
+                            
+                    except Exception as e:
+                        print(f"⚠️ Error reading from Arduino: {e}")
+                        continue
+                
+                # Small delay to prevent excessive CPU usage
+                time.sleep(0.1)
+                
+                # Show heartbeat indicator every 5 seconds
+                if int(elapsed) % 5 == 0 and int(elapsed * 10) % 50 == 0:
+                    print(f"💓 Monitoring... ({int(elapsed)}s)", end='\r')
+        
+        except KeyboardInterrupt:
+            print("\n⏹️  Stopping monitoring...")
+            return False
+        except Exception as e:
+            print(f"❌ Error monitoring person detection: {e}")
+            input("Press Enter to return to menu...")
+            return False
+    
     def register_person(self, num_samples=SAMPLES_PER_PERSON):
         print("\n--- REGISTRATION PROCESS ---")
         
@@ -1483,40 +1583,44 @@ def main():
         while True:
             print("\n" + "-"*60)
             print("MENU:")
-            print("1. Register New Person (Auto-Capture)")
-            print("2. Authenticate Person (Face + Gesture)")
-            print("3. List Registered Users")
-            print("4. Add More Face or Gesture for Existing User")
-            print("5. Test Face or Gesture")
-            print("6. Delete User")
-            print("7. Test Arduino")
-            print("8. Test Sonar Sensor")
-            print("9. Test Servo System")
-            print("10. Manual Servo Control")
-            print("11. Exit")
+            print("1. Start System (Sonar + Face + Gesture)")
+            print("2. Register New Person (Auto-Capture)")
+            print("3. Authenticate Person (Face + Gesture)")
+            print("4. List Registered Users")
+            print("5. Add More Face or Gesture for Existing User")
+            print("6. Test Face or Gesture")
+            print("7. Delete User")
+            print("8. Test Arduino")
+            print("9. Test Sonar Sensor")
+            print("10. Test Servo System")
+            print("11. Manual Servo Control")
+            print("12. Exit")
             print("-"*60)
             
-            choice = input("Choose option (1-11): ").strip()
+            choice = input("Choose option (1-12): ").strip()
             
             if choice == "1":
-                system.register_person()
+                system.start_system()
             
             elif choice == "2":
-                system.authenticate_person()
+                system.register_person()
             
             elif choice == "3":
-                system.list_registered_users()
+                system.authenticate_person()
             
             elif choice == "4":
-                system.add_face_or_gesture()
+                system.list_registered_users()
             
             elif choice == "5":
-                system.test_face_or_gesture()
+                system.add_face_or_gesture()
             
             elif choice == "6":
-                system.delete_user()
+                system.test_face_or_gesture()
             
             elif choice == "7":
+                system.delete_user()
+            
+            elif choice == "8":
                 print("\n🔧 Testing Arduino...")
                 if system.arduino.connected:
                     system.arduino.send_command("test")
@@ -1524,16 +1628,16 @@ def main():
                 else:
                     print("❌ Arduino not connected")
             
-            elif choice == "8":
+            elif choice == "9":
                 system.arduino.test_sonar()
             
-            elif choice == "9":
+            elif choice == "10":
                 system.arduino.test_servo()
             
-            elif choice == "10":
+            elif choice == "11":
                 system.test_servo_manual()
             
-            elif choice == "11":
+            elif choice == "12":
                 print("\n👋 Goodbye!")
                 break
             

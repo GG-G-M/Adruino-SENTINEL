@@ -40,6 +40,12 @@ const int MOTOR_COOLDOWN = 500;          // Minimum time between direction chang
 
 String currentCommand = "";
 
+// SONAR MONITORING
+const int DISTANCE_THRESHOLD = 30;  // Trigger distance in cm
+bool personDetected = false;
+unsigned long lastDetectionTime = 0;
+const unsigned long DETECTION_COOLDOWN = 5000;  // 5 seconds cooldown between detections
+
 // ============================================
 // SERVO CONTROL FUNCTIONS
 // ============================================
@@ -91,9 +97,15 @@ void setup() {
   Serial.print("  Open duration: ");
   Serial.print(DOOR_OPEN_DURATION / 1000);
   Serial.println("s");
+  Serial.print("  Sonar threshold: ");
+  Serial.print(DISTANCE_THRESHOLD);
+  Serial.println("cm");
 }
 
 void loop() {
+  // Monitor sonar sensor for person detection
+  monitorSonar();
+  
   // Listen for commands from Python
   if (Serial.available() > 0) {
     currentCommand = Serial.readStringUntil('\n');
@@ -109,6 +121,9 @@ void loop() {
       accessDenied();
     } else if (currentCommand == "ready") {
       systemReady();
+      // Reset detection state when system is ready
+      personDetected = false;
+      lastDetectionTime = millis();
     } else if (currentCommand == "face_verified") {
       faceVerified();
     } else if (currentCommand == "gesture_required") {
@@ -126,6 +141,54 @@ void loop() {
     } else if (currentCommand.startsWith("speed")) {
       int speed = currentCommand.substring(5).toInt();
       setSpeed(speed);
+    } else if (currentCommand == "person_detected") {
+      // Python confirmed person detection, reset flag and cooldown timer
+      personDetected = false;
+      lastDetectionTime = millis(); // IMPORTANT: Reset cooldown timer
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("System Ready");
+      lcd.setCursor(0, 1);
+      lcd.print("Awaiting Auth...");
+    }
+  }
+}
+
+// ============================================
+// SONAR MONITORING
+// ============================================
+
+void monitorSonar() {
+  // Check if enough time has passed since last detection
+  if (millis() - lastDetectionTime < DETECTION_COOLDOWN) {
+    return; // Still in cooldown period
+  }
+  
+  // Only monitor if not already detected and no authentication in progress
+  if (!personDetected) {
+    float distance = getDistance();
+    
+    // Check if person is within threshold distance
+    if (distance > 0 && distance <= DISTANCE_THRESHOLD) {
+      personDetected = true;
+      lastDetectionTime = millis();
+      
+      // Send detection signal to Python
+      Serial.println("PERSON_DETECTED");
+      
+      // Update LCD
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Person Detected!");
+      lcd.setCursor(0, 1);
+      lcd.print("Starting Auth...");
+      
+      // Alert beep
+      tone(BUZZER_PIN, 2000, 300);
+      
+      Serial.print("Person detected at ");
+      Serial.print(distance);
+      Serial.println("cm - Starting authentication process");
     }
   }
 }
